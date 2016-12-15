@@ -28,10 +28,14 @@ mpi_size = mpi.size()
 
 # Get MPI Rank (like MPI_Comm_rank())
 mpi_rank = mpi.rank()
+
+# Allreduce a tensor
+reduced_tensor = mpi.allreduce([1, 2, 3])
 ```
 
 @@size
 @@rank
+@@allreduce
 """
 
 from __future__ import absolute_import
@@ -40,3 +44,4 @@ from __future__ import print_function
 
 from tensorflow.contrib.mpi.mpi_ops import size
 from tensorflow.contrib.mpi.mpi_ops import rank
+from tensorflow.contrib.mpi.mpi_ops import allreduce
