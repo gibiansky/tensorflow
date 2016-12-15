@@ -20,6 +20,7 @@ cc_library(
     deps = [
         "@protobuf//:protobuf",
         "//tensorflow/core:framework_headers_lib",
+        "//tensorflow/core:stream_executor_headers_lib",
         "//third_party/eigen3",
         "//third_party/mpi:mpi",
     ],

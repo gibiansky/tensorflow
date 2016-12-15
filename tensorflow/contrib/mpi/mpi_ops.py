@@ -52,6 +52,15 @@ def rank():
 ops.NotDifferentiable('MPIRank')
 
 
+def allreduce(tensor):
+  """Create an op that reduces (sums) a tensor across many MPI processes.
+  """
+  return gen_mpi_op_wrapper_py.mpi_allreduce(tensor)
+
+
+ops.NotDifferentiable('MPIAllreduce')
+
+
 def _load_library(name, op_list=None):
   """Loads a .so file containing the specified operators.
 
