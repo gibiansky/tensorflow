@@ -8,6 +8,7 @@
 #define TAG_TENSOR  12
 
 namespace tensorflow {
+namespace contrib {
 namespace mpi {
 
 template <typename T>
@@ -17,6 +18,7 @@ template<typename T>
 Status RingAllgather(OpKernelContext* context, Tensor& input, Tensor* output,
                      std::vector<size_t>& sizes);
 
+}
 }
 }
 
