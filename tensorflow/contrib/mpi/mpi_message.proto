@@ -2,20 +2,34 @@ syntax = "proto3";
 
 package tensorflow.contrib.mpi;
 
-message MPIMessage {
-  enum MessageType {
+import "tensorflow/core/framework/types.proto";
+import "tensorflow/core/framework/tensor_shape.proto";
+
+message MPIRequest {
+  enum RequestType {
     ALLREDUCE = 0;
     ALLGATHER = 1;
   }
-  MessageType message_type = 1;
 
-  enum DataType {
-    MPIFloat = 0;
-    MPIInt = 1;
-  }
-  DataType data_type = 2;
-
+  RequestType request_type = 1;
+  DataType tensor_type = 2;
   string tensor_name = 3;
+  TensorShapeProto tensor_shape = 4;
+};
 
-  repeated int32 tensor_shape = 4;
+message MPIResponse {
+  enum ResponseType {
+    ALLREDUCE = 0;
+    ALLGATHER = 1;
+    ERROR = 2;
+  }
+
+  ResponseType response_type = 1;
+  string tensor_name = 2;
+
+  // Empty unless response_type is ERROR.
+  string error_message = 3;
+
+  // Empty unless response_type is ALLGATHER.
+  repeated int64 tensor_sizes = 4;
 };

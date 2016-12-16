@@ -10,6 +10,7 @@
 #include "third_party/mpi/mpi.h"
 
 namespace tensorflow {
+namespace contrib {
 namespace mpi {
 
 using CPUDevice = Eigen::ThreadPoolDevice;
@@ -187,9 +188,13 @@ Status RingAllgather(OpKernelContext* context, Tensor& input, Tensor* output,
         segment_starts[i] = segment_starts[i - 1] + elements_per_row * sizes[i - 1];
     }
     size_t offset = segment_starts[r];
-    // COPY TO OFFSET
 
+    // Copy data to the right offset for this rank.
     T* buffer = (T*) output->tensor_data().data();
+    auto eigen_input = input.flat<T>();
+    auto eigen_output = typename TTypes<T>::Flat(buffer + offset, elements_per_row * sizes[r]);
+    const CPUDevice& device = context->eigen_device<CPUDevice>();
+    eigen_output.device(device) = eigen_input;
 
     // Receive from your left neighbor with wrap-around
     const size_t recv_from = ((r - 1) + n) % n;
@@ -220,6 +225,8 @@ Status RingAllgather(OpKernelContext* context, Tensor& input, Tensor* output,
             return errors::Unknown("MPI_Sendrecv failed in allgather.");
         }
     }
+
+    return Status::OK();
 }
 
 template Status RingAllgather<int>(
@@ -227,5 +234,6 @@ template Status RingAllgather<int>(
 template Status RingAllgather<float>(
     OpKernelContext*, Tensor&, Tensor*, std::vector<size_t>&);
 
+}
 }
 }
