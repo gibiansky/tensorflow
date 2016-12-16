@@ -61,6 +61,15 @@ def allreduce(tensor):
 ops.NotDifferentiable('MPIAllreduce')
 
 
+def allgather(tensor):
+  """Create an op that gathers a tensor across many MPI processes.
+  """
+  return gen_mpi_op_wrapper_py.mpi_allgather(tensor)
+
+
+ops.NotDifferentiable('MPIAllgather')
+
+
 def _load_library(name, op_list=None):
   """Loads a .so file containing the specified operators.
 
@@ -87,4 +96,5 @@ def _load_library(name, op_list=None):
 
 
 if os.name != 'nt':
-  _load_library('mpi.so', ['MPISize', 'MPIRank'])
+  _load_library('mpi.so', ['MPISize', 'MPIRank',
+                           'MPIAllgather', 'MPIAllreduce'])

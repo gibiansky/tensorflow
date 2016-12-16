@@ -36,6 +36,7 @@ reduced_tensor = mpi.allreduce([1, 2, 3])
 @@size
 @@rank
 @@allreduce
+@@allgather
 """
 
 from __future__ import absolute_import
@@ -45,3 +46,4 @@ from __future__ import print_function
 from tensorflow.contrib.mpi.mpi_ops import size
 from tensorflow.contrib.mpi.mpi_ops import rank
 from tensorflow.contrib.mpi.mpi_ops import allreduce
+from tensorflow.contrib.mpi.mpi_ops import allgather
