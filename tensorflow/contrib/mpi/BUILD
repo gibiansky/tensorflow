@@ -10,6 +10,7 @@ load("//tensorflow:tensorflow.bzl", "tf_gen_op_wrapper_py")
 load("//tensorflow:tensorflow.bzl", "tf_copts")
 load("//tensorflow:tensorflow.bzl", "tf_custom_op_library")
 load("//tensorflow:tensorflow.bzl", "tf_py_test")
+load("//tensorflow/core:platform/default/build_config.bzl", "tf_proto_library")
 
 cc_library(
     name = "mpi_cc",
@@ -52,8 +53,8 @@ tf_gen_op_wrapper_py(
 )
 
 tf_py_test(
-    name = "mpi_test",
-    srcs = ["mpi_op_test.py"],
+    name = "mpi_ops_test",
+    srcs = ["mpi_ops_test.py"],
     additional_deps = [
         ":mpi_op_wrapper_py",
         "//tensorflow:tensorflow_py",

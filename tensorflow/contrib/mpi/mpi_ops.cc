@@ -336,10 +336,28 @@ void EnqueueTensorAllreduce(
 }
 
 void EnqueueTensorAllgather(
+        OpKernelContext* context,
         const Tensor& tensor,
         const std::string name,
-        int dimension,
         CommunicationDoneCallback callback) {
+    // Ensure that the MPI thread is running
+    InitializeMPIOnce();
+
+    MPIMessage message;
+    message.data_shape = tensor.shape();
+    message.message_type = MPIAllgather;
+    message.tensor_name = name;
+
+    auto status = TensorMPIDataType(tensor, &message.data_type);
+    if(!status.ok()) {
+        callback(status);
+        return;
+    }
+
+    std::lock_guard<std::mutex> guard(mpi_global.mutex);
+    std::tuple<Tensor, OpKernelContext*, CommunicationDoneCallback> record(tensor, context, callback);
+    mpi_global.tensor_table.emplace(name, record);
+    mpi_global.message_queue.push(message);
 }
 }
 
@@ -477,6 +495,63 @@ Arguments
 
 Output
     reduced:    A tensor with the same shape as `tensor`, summed across all MPI processes.
+)doc");
+
+class MPIAllgatherOp : public AsyncOpKernel {
+ public:
+  explicit MPIAllgatherOp(OpKernelConstruction* context) : AsyncOpKernel(context) {
+    OP_REQUIRES_OK(context, InitializeMPIOnce());
+  }
+
+  void ComputeAsync(OpKernelContext* context, DoneCallback done) override {
+      auto device_context = context->op_device_context();
+      auto node_name = name();
+      auto callback = [node_name, done, context] {
+        auto tensor = context->input(0);
+        EnqueueTensorAllgather(context, tensor, node_name, [node_name, done, context](StatusOr<Tensor> status) {
+            if(status.ok()) {
+                Tensor output = status.ValueOrDie();
+                context->set_output(0, output);
+            }
+            context->SetStatus(status.status());
+            done();
+        });
+      };
+
+      // If we are on a CPU, our device context will be null and we can't
+      // get a stream to enqueue this on. On a CPU this op is called when the
+      // data is already available, so we can just immediately do the allgather;
+      // we don't have to wait for the data to get populated.
+      if(device_context == nullptr) {
+          callback();
+      } else {
+        auto stream = device_context->stream();
+        stream->ThenDoHostCallback(callback);
+      }
+  }
+};
+
+REGISTER_KERNEL_BUILDER(Name("MPIAllgather").Device(DEVICE_CPU), MPIAllgatherOp);
+
+REGISTER_OP("MPIAllgather")
+    .Input("tensor: float32")
+    .Output("reduced: float32")
+    .SetShapeFn([](shape_inference::InferenceContext* c) {
+      shape_inference::ShapeHandle output;
+      TF_RETURN_IF_ERROR(c->ReplaceDim(c->input(0), 0, c->UnknownDim(), &output));
+      c->set_output(0, output);
+      return Status::OK();
+    })
+    .Doc(R"doc(
+Perform an MPI Allgather on a tensor. All other processes that do a gather on a
+tensor with the same name must have the same rank for that tensor, and have the
+same dimension on all but the first dimension.
+
+Arguments
+    tensor:     A tensor to gather.
+
+Output
+    reduced:    A tensor with the same shape as `tensor` except for the first dimension.
 )doc");
 
 }  // namespace mpi

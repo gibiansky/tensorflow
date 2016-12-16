@@ -85,7 +85,7 @@ class MPITests(tf.test.TestCase):
             tf.set_random_seed(1234)
             dims = [17 + rank] * 3
             tensor = tf.random_uniform(dims, -1.0, 1.0)
-            with self.assertRaises(tf.framework.errors.FailedPrecondition):
+            with self.assertRaises(tf.errors.FailedPreconditionError):
                 session.run(mpi.allreduce(tensor))
 
             # Same number of elements, different rank
@@ -95,7 +95,7 @@ class MPITests(tf.test.TestCase):
             else:
                 dims = [17, 23, 57]
             tensor = tf.random_uniform(dims, -1.0, 1.0)
-            with self.assertRaises(tf.framework.errors.FailedPrecondition):
+            with self.assertRaises(tf.errors.FailedPreconditionError):
                 session.run(mpi.allreduce(tensor))
 
     def test_mpi_allreduce_type_error(self):
@@ -109,7 +109,7 @@ class MPITests(tf.test.TestCase):
             dims = [17 + rank] * 3
             tensor = tf.ones(dims,
                              dtype=tf.int32 if rank % 2 == 0 else tf.float32)
-            with self.assertRaises(tf.framework.errors.FailedPrecondition):
+            with self.assertRaises(tf.errors.FailedPreconditionError):
                 session.run(mpi.allreduce(tensor))
 
     def test_mpi_allgather(self):
@@ -176,7 +176,7 @@ class MPITests(tf.test.TestCase):
             tensor_size = [17] * dim
             tensor_size[rank] = 10 * (rank + 1)
             tensor = tf.ones(tensor_size, dtype=tf.float32) * rank
-            with self.assertRaises(tf.framework.errors.FailedPrecondition):
+            with self.assertRaises(tf.errors.FailedPreconditionError):
                 session.run(mpi.allgather(tensor))
 
     def test_mpi_allgather_type_error(self):
@@ -188,7 +188,7 @@ class MPITests(tf.test.TestCase):
             tensor_size = [17] * dim
             dtype = tf.int32 if rank % 2 == 0 else tf.float32
             tensor = tf.ones(tensor_size, dtype=dtype) * rank
-            with self.assertRaises(tf.framework.errors.FailedPrecondition):
+            with self.assertRaises(tf.errors.FailedPreconditionError):
                 session.run(mpi.allgather(tensor))
 
 
