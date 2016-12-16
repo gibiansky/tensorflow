@@ -10,7 +10,12 @@
 namespace tensorflow {
 namespace mpi {
 
+template <typename T>
 Status RingAllreduce(OpKernelContext* context, Tensor& input, Tensor* output);
+
+template<typename T>
+Status RingAllgather(OpKernelContext* context, Tensor& input, Tensor* output,
+                     std::vector<size_t>& sizes);
 
 }
 }

@@ -25,6 +25,7 @@
 #include "tensorflow/stream_executor/lib/statusor.h"
 
 #include "third_party/mpi/mpi.h"
+#include "tensorflow/contrib/mpi/ring.h"
 
 template<class T>
 using StatusOr = perftools::gputools::port::StatusOr<T>;
@@ -139,7 +140,13 @@ void PerformReductionOrGather(TensorTable& tensor_table, std::string name) {
     CommunicationDoneCallback callback;
     std::tie(tensor, context, callback) = iter->second;
 
-    callback(StatusOr<Tensor>(tensor));
+    Tensor output;
+    Status status = RingAllreduce<float>(context, tensor, &output);
+    if(status.ok()) {
+        callback(StatusOr<Tensor>(output));
+    } else {
+        callback(StatusOr<Tensor>(status));
+    }
 }
 
 // The MPI background thread loop coordinates all the MPI processes and the
@@ -163,7 +170,7 @@ void BackgroundThreadLoop(MPIGlobalState& state) {
 
     while(!state.shut_down) {
         // This delay determines thread frequency and MPI message latency
-        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
         // The rest of this loop happens under the MPI lock
         std::lock_guard<std::mutex> guard(state.mutex);

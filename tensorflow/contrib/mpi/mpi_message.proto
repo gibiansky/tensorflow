@@ -1,0 +1,21 @@
+syntax = "proto3";
+
+package tensorflow.contrib.mpi;
+
+message MPIMessage {
+  enum MessageType {
+    ALLREDUCE = 0;
+    ALLGATHER = 1;
+  }
+  MessageType message_type = 1;
+
+  enum DataType {
+    MPIFloat = 0;
+    MPIInt = 1;
+  }
+  DataType data_type = 2;
+
+  string tensor_name = 3;
+
+  repeated int32 tensor_shape = 4;
+};

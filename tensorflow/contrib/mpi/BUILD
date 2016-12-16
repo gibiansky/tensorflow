@@ -13,7 +13,7 @@ load("//tensorflow:tensorflow.bzl", "tf_py_test")
 
 cc_library(
     name = "mpi_cc",
-    srcs = ["mpi_ops.cc"],
+    srcs = ["mpi_ops.cc", "ring.cc", "ring.h"],
     copts = tf_copts(),
     linkstatic = 1,
     visibility = ["//visibility:private"],
@@ -23,6 +23,7 @@ cc_library(
         "//tensorflow/core:stream_executor_headers_lib",
         "//third_party/eigen3",
         "//third_party/mpi:mpi",
+        ":mpi_message_proto_cc",
     ],
     alwayslink = 1,
 )
@@ -85,4 +86,11 @@ filegroup(
         ],
     ),
     visibility = ["//tensorflow:__subpackages__"],
+)
+
+tf_proto_library(
+    name = "mpi_message_proto",
+    srcs = ["mpi_message.proto"],
+    cc_api_version = 2,
+    visibility = ["//visibility:public"],
 )
