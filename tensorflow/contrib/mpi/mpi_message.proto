@@ -2,8 +2,17 @@ syntax = "proto3";
 
 package tensorflow.contrib.mpi;
 
-import "tensorflow/core/framework/types.proto";
-import "tensorflow/core/framework/tensor_shape.proto";
+// We would like to just use DataType and TensorShapeProto here, but since this
+// is a contrib package, linking directly to those protos seems to be
+// impossible. Doing so compiles, but fails with a cryptic error at runtime
+// about a pointer that was passed to free() but not created by malloc().
+//
+// Since using the tensorflow/core protos seems to cause issues, we use our own,
+// which also has the benefit of supporting only the features we want to support.
+enum MPIDataType {
+    MPI_FLOAT32 = 0;
+    MPI_INT32 = 1;
+};
 
 message MPIRequest {
   enum RequestType {
@@ -12,9 +21,9 @@ message MPIRequest {
   }
 
   RequestType request_type = 1;
-  DataType tensor_type = 2;
+  MPIDataType tensor_type = 2;
   string tensor_name = 3;
-  TensorShapeProto tensor_shape = 4;
+  repeated int64 tensor_shape = 4;
 };
 
 message MPIResponse {

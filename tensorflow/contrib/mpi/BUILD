@@ -92,7 +92,6 @@ filegroup(
 tf_proto_library(
     name = "mpi_message_proto",
     srcs = ["mpi_message.proto"],
-    protodeps = ["//tensorflow/core:protos_all"],
     cc_api_version = 2,
     visibility = ["//visibility:public"],
 )

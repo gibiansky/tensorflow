@@ -164,9 +164,17 @@ MPIResponse ConstructMPIResponse(
 
     // If we are doing an allreduce, check that all tensor shapes are identical
     if(message_type == MPIRequest::ALLREDUCE) {
-        auto tensor_shape = TensorShape(requests[0].tensor_shape());
+        TensorShape tensor_shape;
+        for(auto it = requests[0].tensor_shape().begin();
+            it != requests[0].tensor_shape().end(); it++) {
+            tensor_shape.AddDim(*it);
+        }
         for(unsigned int i = 1; i < requests.size(); i++) {
-            auto request_shape = TensorShape(requests[i].tensor_shape());
+            TensorShape request_shape;
+            for(auto it = requests[i].tensor_shape().begin();
+                it != requests[i].tensor_shape().end(); it++) {
+                tensor_shape.AddDim(*it);
+            }
             if(tensor_shape != request_shape) {
                 *error = true;
                 error_message_stream 
@@ -187,7 +195,12 @@ MPIResponse ConstructMPIResponse(
     // the sum of the first dimension. Collect the sizes by rank.
     std::vector<size_t> tensor_sizes;
     if(message_type == MPIRequest::ALLGATHER) {
-        auto tensor_shape = TensorShape(requests[0].tensor_shape());
+        TensorShape tensor_shape;
+        for(auto it = requests[0].tensor_shape().begin();
+            it != requests[0].tensor_shape().end(); it++) {
+            tensor_shape.AddDim(*it);
+        }
+
         if(tensor_shape.dims() == 0) {
             *error = true;
             error_message_stream 
@@ -201,7 +214,11 @@ MPIResponse ConstructMPIResponse(
                 break;
             }
 
-            auto request_shape = TensorShape(requests[i].tensor_shape());
+            TensorShape request_shape;
+            for(auto it = requests[i].tensor_shape().begin();
+                it != requests[i].tensor_shape().end(); it++) {
+                tensor_shape.AddDim(*it);
+            }
             if(tensor_shape.dims() != request_shape.dims()) {
                 *error = true;
                 error_message_stream 
@@ -505,6 +522,17 @@ Status InitializeMPIOnce() {
     return Status::OK();
 }
 
+Status DataTypeToMPIType(DataType tf_dtype, MPIDataType* mpi_dtype) {
+    if(tf_dtype == DT_FLOAT) {
+        *mpi_dtype = MPI_FLOAT;
+    } else if(tf_dtype == DT_INT32) {
+        *mpi_dtype = MPI_INT32;
+    } else {
+        return errors::FailedPrecondition("Invalid tensor type passed.");
+    }
+    return Status::OK();
+}
+
 void EnqueueTensorAllreduce(
         OpKernelContext* context,
         const Tensor& tensor,
@@ -513,12 +541,20 @@ void EnqueueTensorAllreduce(
     // Ensure that the MPI thread is running
     InitializeMPIOnce();
 
+    MPIDataType dtype;
+    Status status = DataTypeToMPIType(tensor.dtype(), &dtype);
+    if(!status.ok()) {
+        callback(StatusOr<Tensor>(status));
+        return;
+    }
+
     MPIRequest message;
     message.set_tensor_name(name);
-    message.set_tensor_type(tensor.dtype());
-    auto* mut_tensor_shape = message.mutable_tensor_shape();
-    tensor.shape().AsProto(mut_tensor_shape);
+    message.set_tensor_type(dtype);
     message.set_request_type(MPIRequest::ALLREDUCE);
+    for(int i = 0; i < tensor.shape().dims(); i++) {
+        message.add_tensor_shape(tensor.shape().dim_size(i));
+    }
 
     std::lock_guard<std::mutex> guard(mpi_global.mutex);
     std::tuple<Tensor, OpKernelContext*, CommunicationDoneCallback> record(tensor, context, callback);
@@ -534,12 +570,20 @@ void EnqueueTensorAllgather(
     // Ensure that the MPI thread is running
     InitializeMPIOnce();
 
+    MPIDataType dtype;
+    Status status = DataTypeToMPIType(tensor.dtype(), &dtype);
+    if(!status.ok()) {
+        callback(StatusOr<Tensor>(status));
+        return;
+    }
+
     MPIRequest message;
     message.set_tensor_name(name);
-    message.set_tensor_type(tensor.dtype());
-    auto* mut_tensor_shape = message.mutable_tensor_shape();
-    tensor.shape().AsProto(mut_tensor_shape);
+    message.set_tensor_type(dtype);
     message.set_request_type(MPIRequest::ALLGATHER);
+    for(int i = 0; i < tensor.shape().dims(); i++) {
+        message.add_tensor_shape(tensor.shape().dim_size(i));
+    }
 
     std::lock_guard<std::mutex> guard(mpi_global.mutex);
     std::tuple<Tensor, OpKernelContext*, CommunicationDoneCallback> record(tensor, context, callback);
