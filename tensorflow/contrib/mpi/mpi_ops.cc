@@ -524,9 +524,9 @@ Status InitializeMPIOnce() {
 
 Status DataTypeToMPIType(DataType tf_dtype, MPIDataType* mpi_dtype) {
     if(tf_dtype == DT_FLOAT) {
-        *mpi_dtype = MPI_FLOAT;
+        *mpi_dtype = TF_MPI_FLOAT32;
     } else if(tf_dtype == DT_INT32) {
-        *mpi_dtype = MPI_INT32;
+        *mpi_dtype = TF_MPI_INT32;
     } else {
         return errors::FailedPrecondition("Invalid tensor type passed.");
     }

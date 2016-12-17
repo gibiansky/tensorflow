@@ -10,8 +10,8 @@ package tensorflow.contrib.mpi;
 // Since using the tensorflow/core protos seems to cause issues, we use our own,
 // which also has the benefit of supporting only the features we want to support.
 enum MPIDataType {
-    MPI_FLOAT32 = 0;
-    MPI_INT32 = 1;
+    TF_MPI_FLOAT32 = 0;
+    TF_MPI_INT32 = 1;
 };
 
 message MPIRequest {

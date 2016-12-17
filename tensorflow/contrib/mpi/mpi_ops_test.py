@@ -25,7 +25,6 @@ import itertools
 import tensorflow as tf
 
 import tensorflow.contrib.mpi as mpi
-from tensorflow.python.platform import resource_loader
 
 MPI_ENV_RANK = "PMI_RANK"
 MPI_ENV_SIZE = "PMI_SIZE"
@@ -67,7 +66,6 @@ class MPITests(tf.test.TestCase):
         """Test that the allreduce raises an error if different ranks try to
         send tensors of different rank or dimension."""
         with self.test_session() as session:
-            size = session.run(mpi.size())
             rank = session.run(mpi.rank())
 
             # Same rank, different dimension
@@ -91,7 +89,6 @@ class MPITests(tf.test.TestCase):
         """Test that the allreduce raises an error if different ranks try to
         send tensors of different type."""
         with self.test_session() as session:
-            size = session.run(mpi.size())
             rank = session.run(mpi.rank())
 
             # Same rank, different dimension
@@ -123,7 +120,7 @@ class MPITests(tf.test.TestCase):
                              num_or_size_splits=size))
 
                 for i, rank_tensor in enumerate(rank_tensors):
-                    self.assertEqual(list(rank_tensor.shape),[17] * dim)
+                    self.assertEqual(list(rank_tensor.shape), [17] * dim)
                     self.assertTrue(
                         session.run(tf.reduce_all(rank_tensor == i)),
                         "mpi.allgather produces incorrect gathered tensor")
@@ -166,7 +163,7 @@ class MPITests(tf.test.TestCase):
         with self.test_session() as session:
             rank = session.run(mpi.rank())
 
-            tensor_size = [17] * dim
+            tensor_size = [17] * 3
             tensor_size[rank] = 10 * (rank + 1)
             tensor = tf.ones(tensor_size, dtype=tf.float32) * rank
             with self.assertRaises(tf.errors.FailedPreconditionError):
@@ -178,7 +175,7 @@ class MPITests(tf.test.TestCase):
         with self.test_session() as session:
             rank = session.run(mpi.rank())
 
-            tensor_size = [17] * dim
+            tensor_size = [17] * 3
             dtype = tf.int32 if rank % 2 == 0 else tf.float32
             tensor = tf.ones(tensor_size, dtype=dtype) * rank
             with self.assertRaises(tf.errors.FailedPreconditionError):
@@ -186,4 +183,4 @@ class MPITests(tf.test.TestCase):
 
 
 if __name__ == '__main__':
-  tf.test.main()
+    tf.test.main()
