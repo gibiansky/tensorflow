@@ -31,6 +31,9 @@
 template<class T>
 using StatusOr = perftools::gputools::port::StatusOr<T>;
 
+using CPUDevice = Eigen::ThreadPoolDevice;
+using GPUDevice = Eigen::GpuDevice;
+
 namespace tensorflow {
 namespace contrib {
 namespace mpi {
@@ -296,9 +299,21 @@ void PerformReductionOrGather(TensorTable& tensor_table, MPIResponse response) {
             tensor_sizes.push_back(size_t(*it));
         }
 
-        status = RingAllgather<float>(context, tensor, &output, tensor_sizes);
+        if(tensor.dtype() == DT_FLOAT) {
+            status = RingAllgather<CPUDevice, float>(context, tensor, &output, tensor_sizes);
+        } else if(tensor.dtype() == DT_INT32) {
+            status = RingAllgather<CPUDevice, int>(context, tensor, &output, tensor_sizes);
+        } else {
+            status = errors::Unknown("Invalid tensor type for MPI allgather.");
+        }
     } else if(response.response_type() == MPIResponse::ALLREDUCE) {
-        status = RingAllreduce<float>(context, tensor, &output);
+        if(tensor.dtype() == DT_FLOAT) {
+            status = RingAllreduce<CPUDevice, float>(context, tensor, &output);
+        } else if(tensor.dtype() == DT_INT32) {
+            status = RingAllreduce<CPUDevice, int>(context, tensor, &output);
+        } else {
+            status = errors::Unknown("Invalid tensor type for MPI allreduce.");
+        }
     }
 
     if(status.ok()) {
@@ -648,10 +663,14 @@ class MPIAllreduceOp : public AsyncOpKernel {
 };
 
 REGISTER_KERNEL_BUILDER(Name("MPIAllreduce").Device(DEVICE_CPU), MPIAllreduceOp);
+#ifdef GOOGLE_CUDA
+REGISTER_KERNEL_BUILDER(Name("MPIAllreduce").Device(DEVICE_GPU), MPIAllreduceOp);
+#endif
 
 REGISTER_OP("MPIAllreduce")
-    .Input("tensor: float32")
-    .Output("reduced: float32")
+    .Attr("T: {int32, float32}")
+    .Input("tensor: T")
+    .Output("sum: T")
     .SetShapeFn([](shape_inference::InferenceContext* c) {
       c->set_output(0, c->input(0));
       return Status::OK();
@@ -666,7 +685,7 @@ Arguments
     tensor:     A tensor to reduce.
 
 Output
-    reduced:    A tensor with the same shape as `tensor`, summed across all MPI processes.
+    sum:    A tensor with the same shape as `tensor`, summed across all MPI processes.
 )doc");
 
 class MPIAllgatherOp : public AsyncOpKernel {
@@ -704,10 +723,14 @@ class MPIAllgatherOp : public AsyncOpKernel {
 };
 
 REGISTER_KERNEL_BUILDER(Name("MPIAllgather").Device(DEVICE_CPU), MPIAllgatherOp);
+#ifdef GOOGLE_CUDA
+REGISTER_KERNEL_BUILDER(Name("MPIAllgather").Device(DEVICE_GPU), MPIAllgatherOp);
+#endif
 
 REGISTER_OP("MPIAllgather")
-    .Input("tensor: float32")
-    .Output("reduced: float32")
+    .Attr("T: {int32, float32}")
+    .Input("tensor: T")
+    .Output("output: T")
     .SetShapeFn([](shape_inference::InferenceContext* c) {
       shape_inference::ShapeHandle output;
       TF_RETURN_IF_ERROR(c->ReplaceDim(c->input(0), 0, c->UnknownDim(), &output));
@@ -723,7 +746,7 @@ Arguments
     tensor:     A tensor to gather.
 
 Output
-    reduced:    A tensor with the same shape as `tensor` except for the first dimension.
+    gathered:    A tensor with the same shape as `tensor` except for the first dimension.
 )doc");
 
 }  // namespace mpi
