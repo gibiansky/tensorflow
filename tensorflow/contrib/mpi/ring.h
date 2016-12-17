@@ -11,10 +11,10 @@ namespace tensorflow {
 namespace contrib {
 namespace mpi {
 
-template <typename T>
+template <typename Device, typename T>
 Status RingAllreduce(OpKernelContext* context, Tensor& input, Tensor* output);
 
-template<typename T>
+template<typename Device, typename T>
 Status RingAllgather(OpKernelContext* context, Tensor& input, Tensor* output,
                      std::vector<size_t>& sizes);
 

@@ -14,6 +14,7 @@ namespace contrib {
 namespace mpi {
 
 using CPUDevice = Eigen::ThreadPoolDevice;
+using GPUDevice = Eigen::GpuDevice;
 
 
 // Convert from templated types to values we can pass to MPI.
@@ -39,7 +40,7 @@ template<> DataType TensorFlowDataType<int>() { return DT_INT32; };
 //
 // Assumes that all MPI processes are doing an allreduce of the same tensor,
 // with the same dimensions.
-template<typename T>
+template<typename Device, typename T>
 Status RingAllreduce(OpKernelContext* context, Tensor& input, Tensor* output) {
     // Acquire MPI size and rank
     int n, r;
@@ -51,7 +52,7 @@ Status RingAllreduce(OpKernelContext* context, Tensor& input, Tensor* output) {
     if(!status.ok()) {
         return status;
     }
-    const CPUDevice& device = context->eigen_device<CPUDevice>();
+    const Device& device = context->eigen_device<Device>();
     output->flat<T>().device(device) = input.flat<T>();
 
     T* buffer = (T*) output->tensor_data().data();
@@ -142,10 +143,15 @@ Status RingAllreduce(OpKernelContext* context, Tensor& input, Tensor* output) {
     return Status::OK();
 }
 
-template Status RingAllreduce<int>(OpKernelContext*, Tensor&, Tensor*);
-template Status RingAllreduce<float>(OpKernelContext*, Tensor&, Tensor*);
+template Status RingAllreduce<CPUDevice, int>(OpKernelContext*, Tensor&, Tensor*);
+template Status RingAllreduce<CPUDevice, float>(OpKernelContext*, Tensor&, Tensor*);
 
-template<typename T>
+#ifdef GOOGLE_CUDA
+template Status RingAllreduce<GPUDevice, int>(OpKernelContext*, Tensor&, Tensor*);
+template Status RingAllreduce<GPUDevice, float>(OpKernelContext*, Tensor&, Tensor*);
+#endif
+
+template<typename Device, typename T>
 Status RingAllgather(OpKernelContext* context, Tensor& input, Tensor* output,
                      std::vector<size_t>& sizes) {
     // Acquire MPI size and rank
@@ -193,7 +199,7 @@ Status RingAllgather(OpKernelContext* context, Tensor& input, Tensor* output,
     T* buffer = (T*) output->tensor_data().data();
     auto eigen_input = input.flat<T>();
     auto eigen_output = typename TTypes<T>::Flat(buffer + offset, elements_per_row * sizes[r]);
-    const CPUDevice& device = context->eigen_device<CPUDevice>();
+    const Device& device = context->eigen_device<Device>();
     eigen_output.device(device) = eigen_input;
 
     // Receive from your left neighbor with wrap-around
@@ -229,10 +235,16 @@ Status RingAllgather(OpKernelContext* context, Tensor& input, Tensor* output,
     return Status::OK();
 }
 
-template Status RingAllgather<int>(
+template Status RingAllgather<CPUDevice, int>(
     OpKernelContext*, Tensor&, Tensor*, std::vector<size_t>&);
-template Status RingAllgather<float>(
+template Status RingAllgather<CPUDevice, float>(
     OpKernelContext*, Tensor&, Tensor*, std::vector<size_t>&);
+#ifdef GOOGLE_CUDA
+template Status RingAllgather<GPUDevice, int>(
+    OpKernelContext*, Tensor&, Tensor*, std::vector<size_t>&);
+template Status RingAllgather<GPUDevice, float>(
+    OpKernelContext*, Tensor&, Tensor*, std::vector<size_t>&);
+#endif
 
 }
 }
