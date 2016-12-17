@@ -20,6 +20,7 @@ from __future__ import division
 from __future__ import print_function
 
 import os.path
+import itertools
 
 import tensorflow as tf
 
@@ -45,29 +46,17 @@ class MPITests(tf.test.TestCase):
             size = session.run(mpi.size())
             self.assertEqual(true_size, size)
 
-    def test_mpi_allreduce_float(self):
-        """Test that the allreduce correctly sums 1D, 2D, 3D float tensors."""
-        with self.test_session() as session:
-            size = session.run(mpi.size())
-
-            for dim in [1, 2, 3]:
-                tf.set_random_seed(1234)
-                tensor = tf.random_uniform([17] * dim, -1.0, 1.0)
-                summed = mpi.allreduce(tensor)
-                multiplied = tensor * tf.cast(size, tf.float32)
-                max_difference = tf.reduce_max(tf.abs(summed - multiplied))
-                self.assertTrue(session.run(max_difference) < 1e-4,
-                                "mpi.allreduce produces incorrect results")
-
-    def test_mpi_allreduce_int(self):
+    def test_mpi_allreduce(self):
         """Test that the allreduce correctly sums 1D, 2D, 3D int32 tensors."""
         with self.test_session() as session:
             size = session.run(mpi.size())
 
-            for dim in [1, 2, 3]:
+            dtypes = [tf.int32, tf.float32]
+            dims = [1, 2, 3]
+            for dtype, dim in itertools.product(dtypes, dims):
                 tf.set_random_seed(1234)
                 tensor = tf.random_uniform([17] * dim, -100, 100,
-                                           dtype=tf.int32)
+                                           dtype=dtype)
                 summed = mpi.allreduce(tensor)
                 multiplied = tensor * size
                 max_difference = tf.reduce_max(tf.abs(summed - multiplied))
@@ -118,24 +107,26 @@ class MPITests(tf.test.TestCase):
             size = session.run(mpi.size())
             rank = session.run(mpi.rank())
 
-            for dtype in [tf.int32, tf.float32]:
-                for dim in [1, 2, 3]:
-                    tensor = tf.ones([17] * dim, dtype=dtype) * rank
-                    gathered = mpi.allgather(tensor)
+            devices = "/gpu:0", "/cpu:0"
+            dtypes = tf.int32, tf.float32
+            dims = 1, 2, 3
+            for device, dtype, dim in itertools.product(devices, dtypes, dims):
+                tensor = tf.ones([17] * dim, dtype=dtype) * rank
+                gathered = mpi.allgather(tensor)
 
-                    gathered_tensor = session.run(gathered)
-                    self.assertEqual(list(gathered_tensor.shape),
-                                     [17 * size] + [17] * (dim - 1))
+                gathered_tensor = session.run(gathered)
+                self.assertEqual(list(gathered_tensor.shape),
+                                 [17 * size] + [17] * (dim - 1))
 
-                    rank_tensors = session.run(
-                        tf.split(value=gathered, axis=0,
-                                 num_or_size_splits=size))
+                rank_tensors = session.run(
+                    tf.split(value=gathered, axis=0,
+                             num_or_size_splits=size))
 
-                    for i, rank_tensor in enumerate(rank_tensors):
-                        self.assertEqual(list(rank_tensor.shape),[17] * dim)
-                        self.assertTrue(
-                            session.run(tf.reduce_all(rank_tensor == i)),
-                            "mpi.allgather produces incorrect gathered tensor")
+                for i, rank_tensor in enumerate(rank_tensors):
+                    self.assertEqual(list(rank_tensor.shape),[17] * dim)
+                    self.assertTrue(
+                        session.run(tf.reduce_all(rank_tensor == i)),
+                        "mpi.allgather produces incorrect gathered tensor")
 
     def test_mpi_allgather_variable_size(self):
         """Test that the allgather correctly gathers 1D, 2D, 3D tensors,
@@ -144,28 +135,30 @@ class MPITests(tf.test.TestCase):
             size = session.run(mpi.size())
             rank = session.run(mpi.rank())
 
-            for dtype in [tf.int32, tf.float32]:
-                for dim in [1, 2, 3]:
-                    tensor_sizes = [17, 32, 81, 12, 15, 23, 22][:size]
-                    tensor = tf.ones([tensor_sizes[rank]] + [17] * (dim - 1),
-                                     dtype=dtype) * rank
-                    gathered = mpi.allgather(tensor)
+            devices = "/gpu:0", "/cpu:0"
+            dtypes = tf.int32, tf.float32
+            dims = 1, 2, 3
+            for device, dtype, dim in itertools.product(devices, dtypes, dims):
+                tensor_sizes = [17, 32, 81, 12, 15, 23, 22][:size]
+                tensor = tf.ones([tensor_sizes[rank]] + [17] * (dim - 1),
+                                 dtype=dtype) * rank
+                gathered = mpi.allgather(tensor)
 
-                    gathered_tensor = session.run(gathered)
-                    expected_size = sum(tensor_sizes)
-                    self.assertEqual(list(gathered_tensor.shape),
-                                     [expected_size] + [17] * (dim - 1))
+                gathered_tensor = session.run(gathered)
+                expected_size = sum(tensor_sizes)
+                self.assertEqual(list(gathered_tensor.shape),
+                                 [expected_size] + [17] * (dim - 1))
 
-                    rank_tensors = session.run(
-                        tf.split_v(value=gathered, axis=0,
-                                   num_or_size_splits=tensor_sizes))
+                rank_tensors = session.run(
+                    tf.split_v(value=gathered, axis=0,
+                               num_or_size_splits=tensor_sizes))
 
-                    for i, rank_tensor in enumerate(rank_tensors):
-                        rank_size = [tensor_sizes[i]] + [17] * (dim - 1)
-                        self.assertEqual(list(rank_tensor.shape), rank_size)
-                        self.assertTrue(
-                            session.run(tf.reduce_all(rank_tensor == i)),
-                            "mpi.allgather produces incorrect gathered tensor")
+                for i, rank_tensor in enumerate(rank_tensors):
+                    rank_size = [tensor_sizes[i]] + [17] * (dim - 1)
+                    self.assertEqual(list(rank_tensor.shape), rank_size)
+                    self.assertTrue(
+                        session.run(tf.reduce_all(rank_tensor == i)),
+                        "mpi.allgather produces incorrect gathered tensor")
 
     def test_mpi_allgather_error(self):
         """Test that the allgather returns an error if any dimension besides
