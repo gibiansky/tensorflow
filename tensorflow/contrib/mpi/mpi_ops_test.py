@@ -26,21 +26,31 @@ import tensorflow as tf
 
 import tensorflow.contrib.mpi as mpi
 
-MPI_ENV_RANK = "PMI_RANK"
-MPI_ENV_SIZE = "PMI_SIZE"
+
+def mpi_env_rank_and_size():
+    rank_env = "PMI_RANK OMPI_COMM_WORLD_RANK".split()
+    size_env = "PMI_SIZE OMPI_COMM_WORLD_SIZE".split()
+
+    for rank_var, size_var in zip(rank_env, size_env):
+        rank = os.environ.get(rank_var)
+        size = os.environ.get(size_var)
+        if rank is not None and size is not None:
+            return int(rank), int(size)
+
+    return 0, 1
 
 
 class MPITests(tf.test.TestCase):
     def test_mpi_rank(self):
         """Test that the rank returned by mpi.rank() is correct."""
-        true_rank = int(os.environ.get(MPI_ENV_RANK, "0"))
+        true_rank, _ = mpi_env_rank_and_size()
         with self.test_session() as session:
             rank = session.run(mpi.rank())
             self.assertEqual(true_rank, rank)
 
     def test_mpi_size(self):
         """Test that the size returned by mpi.size() is correct."""
-        true_size = int(os.environ.get(MPI_ENV_SIZE, "1"))
+        _, true_size = mpi_env_rank_and_size()
         with self.test_session() as session:
             size = session.run(mpi.size())
             self.assertEqual(true_size, size)
@@ -102,7 +112,7 @@ class MPITests(tf.test.TestCase):
                 return
 
             # Same rank, different dimension
-            dims = [17 + rank] * 3
+            dims = [17] * 3
             tensor = tf.ones(dims,
                              dtype=tf.int32 if rank % 2 == 0 else tf.float32)
             with self.assertRaises(tf.errors.FailedPreconditionError):

@@ -116,7 +116,7 @@ Status RingAllreduce(OpKernelContext* context, Tensor& input, Tensor* output) {
         MPI_Wait(&recv_req, &recv_status);
 
         const int N = segment_sizes[((r-i-1) + n) % n];
-        auto eigen_recv = temp.flat<T>();
+        auto eigen_recv = temp.Slice(0, segment_sizes[((r-i-1) + n) % n]).flat<T>();
         auto eigen_update = typename TTypes<T>::Flat(
             (T*) segment_update, N);
         eigen_update.device(device) += eigen_recv;
