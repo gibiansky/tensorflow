@@ -28,6 +28,27 @@ import tensorflow.contrib.mpi as mpi
 
 
 def mpi_env_rank_and_size():
+    """Get MPI rank and size from environment variables and return them as a
+    tuple of integers.
+
+    Most MPI implementations have an `mpirun` or `mpiexec` command that will
+    run an MPI executable and set up all communication necessary between the
+    different processors. As part of that set up, they will set environment
+    variables that contain the rank and size of the MPI_COMM_WORLD
+    communicator. We can read those environment variables from Python in order
+    to ensure that `mpi.rank()` and `mpi.size()` return the expected values.
+
+    Since MPI is just a standard, not an implementation, implementations
+    typically choose their own environment variable names. This function tries
+    to support several different implementation, but really it only needs to
+    support whatever implementation we want to use for the TensorFlow test
+    suite.
+
+    If this is not running under MPI, then defaults of rank zero and size one
+    are returned. (This is appropriate because when you call MPI_Init in an
+    application not started with mpirun, it will create a new independent
+    communicator with only one process in it.)
+    """
     rank_env = "PMI_RANK OMPI_COMM_WORLD_RANK".split()
     size_env = "PMI_SIZE OMPI_COMM_WORLD_SIZE".split()
 
@@ -37,10 +58,15 @@ def mpi_env_rank_and_size():
         if rank is not None and size is not None:
             return int(rank), int(size)
 
+    # Default to rank zero and size one if there are no environment variables
     return 0, 1
 
 
 class MPITests(tf.test.TestCase):
+    """
+    Tests for MPI ops in tensorflow.contrib.mpi.
+    """
+
     def test_mpi_rank(self):
         """Test that the rank returned by mpi.rank() is correct."""
         true_rank, _ = mpi_env_rank_and_size()
@@ -56,7 +82,7 @@ class MPITests(tf.test.TestCase):
             self.assertEqual(true_size, size)
 
     def test_mpi_allreduce(self):
-        """Test that the allreduce correctly sums 1D, 2D, 3D int32 tensors."""
+        """Test that the allreduce correctly sums 1D, 2D, 3D tensors."""
         with self.test_session() as session:
             size = session.run(mpi.size())
 

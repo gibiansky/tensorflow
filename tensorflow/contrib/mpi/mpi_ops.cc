@@ -28,6 +28,35 @@
 #include "tensorflow/contrib/mpi/ring.h"
 #include "tensorflow/contrib/mpi/mpi_message.pb.h"
 
+/*
+ * MPI Allreduce and Allgather Ops for TensorFlow.
+ *
+ * TensorFlow natively provides inter-device communication through send and
+ * receive ops and inter-node communication through Distributed TensorFlow,
+ * based on the same send and receive abstractions. These end up being
+ * insufficient for synchronous data-parallel training on HPC clusters where
+ * Infiniband or other high-speed interconnects are available.  This module
+ * implements MPI ops for allgather and allreduce, which do bandwidth-optimal
+ * gathers and reductions and can take advantage of hardware-optimized
+ * communication libraries through the MPI implementation.
+ *
+ * The primary logic of the allreduce and allgather are in RingAllgather() and
+ * RingAllreduce(). The background thread which facilitates MPI operations is
+ * run in BackgroundThreadLoop(). The provided MPI ops are:
+ *      – MPISize:
+ *          Get the number of MPI processes in the global communicator.
+ *      – MPIRank:
+ *          Get the rank of the current MPI process in the global communicator.
+ *      – MPIAllreduce:
+ *          Perform an allreduce on a Tensor, returning the sum
+ *          across all MPI processes in the global communicator.
+ *      – MPIAllgather:
+ *          Perform an allgather on a Tensor, returning the concatenation of
+ *          the tensor on the first dimension across all MPI processes in the
+ *          global communicator.
+ *
+ */
+
 template<class T>
 using StatusOr = perftools::gputools::port::StatusOr<T>;
 
@@ -40,16 +69,29 @@ namespace mpi {
 
 namespace {
 
-// A callback to call after the MPI communication completes.
+// A callback to call after the MPI communication completes. Since the
+// allreduce and allgather ops are asynchronous, this callback is what resumes
+// computation after the reduction is completed.
 typedef std::function<void(StatusOr<Tensor>)> CommunicationDoneCallback;
 
-// Table storing Tensors to be reduced, keyed by unique name
+// Table storing Tensors to be reduced, keyed by unique name.
+// This table contains everything necessary to do the reduction:
+//  - Tensor: The tensor data.
+//  - OpKernelContext*: A context used to allocate the output or temporary values.
+//  - CommunicationDoneCallback: A callback to call with the result.
 typedef std::unordered_map<std::string, std::tuple<Tensor, OpKernelContext*, CommunicationDoneCallback> > TensorTable;
 
 // Table for storing Tensor metadata on rank zero. This is used for error
-// checking and size calculations.
+// checking and size calculations, as well as determining when a reduction is
+// ready to be done (when all nodes are ready to do it).
 typedef std::unordered_map<std::string, std::vector<MPIRequest> > MessageTable;
 
+// The global state required for the MPI ops.
+//
+// MPI is a library that stores a lot of global per-program state and often
+// requires running on a single thread. As a result, we have to have a single
+// background thread responsible for all MPI operations, and communicate with
+// that background thread through global state.
 struct MPIGlobalState {
     // An atomic boolean which is set to true when MPI is initialized.
     // This ensures that MPI_Init is never called twice.
@@ -58,13 +100,13 @@ struct MPIGlobalState {
     // A mutex that needs to be used whenever MPI operations are done.
     std::mutex mutex;
 
-    // Tensors waiting to be allreduced or allgathered
+    // Tensors waiting to be allreduced or allgathered.
     TensorTable tensor_table;
 
-    // Queue of MPI messages waiting to be sent
+    // Queue of MPI requests waiting to be sent to the coordinator node.
     std::queue<MPIRequest> message_queue;
 
-    // Background thread running MPI communication
+    // Background thread running MPI communication.
     std::thread background_thread;
 
     // Whether the background thread should shutdown.
@@ -74,6 +116,16 @@ struct MPIGlobalState {
     // how many nodes are ready to allreduce every tensor (keyed by tensor
     // name).
     std::unique_ptr<MessageTable> message_table;
+
+    // Whether MPI_Init has been completed on the background thread.
+    bool initialization_done;
+
+    // Whether MPI_Init succeeded on the background thread.
+    Status init_status;
+
+    // The MPI rank and size.
+    int rank;
+    int size;
 
     ~MPIGlobalState() {
         // Make sure that the destructor of the background thread is safe to
@@ -88,16 +140,19 @@ struct MPIGlobalState {
 
 // All the MPI state that must be stored globally per-process.
 static MPIGlobalState mpi_global = {
-    .initialized_flag = ATOMIC_FLAG_INIT
+    .initialized_flag = ATOMIC_FLAG_INIT,
+    .initialization_done = false
 };
 
-
+// For clarify in argument lists.
 #define RANK_ZERO   0
+
+// A tag used for all coordinator messaging.
 #define TAG_NOTIFY  1
 
-// Increment the tensor count for a name (or set it to one if it doesn't
-// exist), and return whether the total count is now equal to the MPI size (and
-// thus we are ready to reduce the tensor).
+// Store the MPIRequest for a name, and return whether the total count of
+// MPIRequests for that tensor is now equal to the MPI size (and thus we are
+// ready to reduce the tensor).
 bool IncrementTensorCount(
         std::unique_ptr<MessageTable>& message_table,
         MPIRequest msg, int mpi_size) {
@@ -114,16 +169,20 @@ bool IncrementTensorCount(
     return count == mpi_size;
 }
 
-MPIResponse ConstructMPIResponse(
-        std::unique_ptr<MessageTable>& message_table,
-        std::string name, bool* error) {
+// Once a tensor is ready to be reduced, the coordinator sends an MPIResponse
+// instructing all ranks to start the reduction to all ranks. The MPIResponse
+// also contains error messages in case the submitted MPIRequests were not
+// valid (for example, contained mismatched shapes or types).
+//
+// Constructing the MPIResponse, thus, requires a whole lot of error checking.
+MPIResponse ConstructMPIResponse(std::unique_ptr<MessageTable>& message_table, std::string name) {
+    bool error = false;
     auto it =  message_table->find(name);
     assert(it != message_table->end());
 
     std::vector<MPIRequest> requests = it->second;
     assert(requests.size() > 0);
 
-    *error = false;
     std::ostringstream error_message_stream;
 
     // Check that all data types being reduced or gathered are identical
@@ -131,7 +190,7 @@ MPIResponse ConstructMPIResponse(
     for(unsigned int i = 1; i < requests.size(); i++) {
         auto request_type = requests[i].tensor_type();
         if(data_type != request_type) {
-            *error = true;
+            error = true;
             error_message_stream 
                 << "Mismatched data types: One rank had type "
                 << MPIDataType_Name(data_type)
@@ -145,13 +204,13 @@ MPIResponse ConstructMPIResponse(
     // Check that all requested operations are the same
     auto message_type = requests[0].request_type();
     for(unsigned int i = 1; i < requests.size(); i++) {
-        if(*error) {
+        if(error) {
             break;
         }
 
         auto request_type = requests[i].request_type();
         if(message_type != request_type) {
-            *error = true;
+            error = true;
             error_message_stream 
                 << "Mismatched MPI operations: One rank did an "
                 << message_type 
@@ -170,7 +229,7 @@ MPIResponse ConstructMPIResponse(
             tensor_shape.AddDim(*it);
         }
         for(unsigned int i = 1; i < requests.size(); i++) {
-            if(*error) {
+            if(error) {
                 break;
             }
 
@@ -180,7 +239,7 @@ MPIResponse ConstructMPIResponse(
                 request_shape.AddDim(*it);
             }
             if(tensor_shape != request_shape) {
-                *error = true;
+                error = true;
                 error_message_stream 
                     << "Mismatched allreduce tensor shapes: "
                     << "One rank reduced a tensor of shape "
@@ -192,10 +251,11 @@ MPIResponse ConstructMPIResponse(
             }
         }
     } 
+
     // If we are doing an allgather, make sure all but the first dimension are
     // the same. The first dimension may be different and the output tensor is
     // the sum of the first dimension. Collect the sizes by rank.
-    std::vector<size_t> tensor_sizes;
+    std::vector<size_t> tensor_sizes(requests.size());
     if(message_type == MPIRequest::ALLGATHER) {
         TensorShape tensor_shape;
         for(auto it = requests[0].tensor_shape().begin();
@@ -204,25 +264,25 @@ MPIResponse ConstructMPIResponse(
         }
 
         if(tensor_shape.dims() == 0) {
-            *error = true;
+            error = true;
             error_message_stream 
                 << "Rank zero tried to gather a rank-zero tensor.";
         } else {
-            tensor_sizes.push_back(size_t(tensor_shape.dim_size(0)));
+            tensor_sizes[requests[0].request_rank()] = size_t(tensor_shape.dim_size(0));
         }
 
         for(unsigned int i = 1; i < requests.size(); i++) {
-            if(*error) {
+            if(error) {
                 break;
             }
 
             TensorShape request_shape;
             for(auto it = requests[i].tensor_shape().begin();
                 it != requests[i].tensor_shape().end(); it++) {
-                tensor_shape.AddDim(*it);
+                request_shape.AddDim(*it);
             }
             if(tensor_shape.dims() != request_shape.dims()) {
-                *error = true;
+                error = true;
                 error_message_stream 
                     << "Mismatched allgather tensor shapes: "
                     << "One rank gathered a tensor of rank "
@@ -236,7 +296,7 @@ MPIResponse ConstructMPIResponse(
             bool dim_mismatch = false;
             for(unsigned int dim = 1; dim < tensor_shape.dims(); dim++) {
                 if(tensor_shape.dim_size(dim) != request_shape.dim_size(dim)) {
-                    *error = true;
+                    error = true;
                     error_message_stream 
                         << "Mismatched allgather tensor shapes: "
                         << "One rank gathered a tensor with dimension "
@@ -252,15 +312,14 @@ MPIResponse ConstructMPIResponse(
                 break;
             }
 
-            tensor_sizes.push_back(size_t(tensor_shape.dim_size(0)));
+            tensor_sizes[requests[i].request_rank()] = size_t(request_shape.dim_size(0));
         }
     }
 
-    std::string error_message = error_message_stream.str();
-
     MPIResponse response;
     response.set_tensor_name(name);
-    if(*error) {
+    if(error) {
+        std::string error_message = error_message_stream.str();
         response.set_response_type(MPIResponse::ERROR);
         response.set_error_message(error_message);
     } else if(message_type == MPIRequest::ALLGATHER) {
@@ -279,24 +338,6 @@ MPIResponse ConstructMPIResponse(
     return response;
 }
 
-void ReportReductionError(TensorTable& tensor_table, MPIResponse response) {
-    // We should never fail at finding this key in the tensor table.
-    auto name = response.tensor_name();
-    auto iter = tensor_table.find(name);
-    assert(iter != tensor_table.end());
-
-    Tensor tensor;
-    OpKernelContext* context;
-    CommunicationDoneCallback callback;
-    std::tie(tensor, context, callback) = iter->second;
-
-    // Clear the tensor table of this tensor and its callbacks; the rest of
-    // this function takes care of it.
-    tensor_table.erase(iter);
-
-    callback(StatusOr<Tensor>(errors::FailedPrecondition(response.error_message())));
-}
-
 void PerformReductionOrGather(TensorTable& tensor_table, MPIResponse response) {
     // We should never fail at finding this key in the tensor table.
     auto name = response.tensor_name();
@@ -304,7 +345,8 @@ void PerformReductionOrGather(TensorTable& tensor_table, MPIResponse response) {
     assert(iter != tensor_table.end());
 
     assert(response.response_type() == MPIResponse::ALLREDUCE ||
-           response.response_type() == MPIResponse::ALLGATHER);
+           response.response_type() == MPIResponse::ALLGATHER ||
+           response.response_type() == MPIResponse::ERROR);
 
     Tensor tensor;
     OpKernelContext* context;
@@ -340,6 +382,8 @@ void PerformReductionOrGather(TensorTable& tensor_table, MPIResponse response) {
         } else {
             status = errors::Unknown("Invalid tensor type for MPI allreduce.");
         }
+    } else if(response.response_type() == MPIResponse::ERROR) {
+        status = errors::FailedPrecondition(response.error_message());
     }
 
     if(status.ok()) {
@@ -352,6 +396,15 @@ void PerformReductionOrGather(TensorTable& tensor_table, MPIResponse response) {
 // The MPI background thread loop coordinates all the MPI processes and the
 // tensor reductions.
 void BackgroundThreadLoop(MPIGlobalState& state) {
+    // Initialize MPI. This must happen on the background thread, since not all
+    // MPI implementations support being called from multiple threads.
+    auto init_result = MPI_Init(NULL, NULL);
+    if(init_result != MPI_SUCCESS) {
+        state.init_status = errors::Unknown("Could not initialize MPI; MPI_Init() failed.");
+    } else {
+        state.init_status = Status::OK();
+    }
+
     // Get MPI rank to determine if we are rank zero.
     int rank;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
@@ -360,6 +413,10 @@ void BackgroundThreadLoop(MPIGlobalState& state) {
     // Get MPI size to determine how many tensors to wait for before reducing.
     int size;
     MPI_Comm_size(MPI_COMM_WORLD, &size);
+
+    state.rank = rank;
+    state.size = size;
+    state.initialization_done = true;
 
     // Initialize the tensor count table. No tensors are available yet.
     if(is_coordinator) {
@@ -448,9 +505,7 @@ void BackgroundThreadLoop(MPIGlobalState& state) {
             for(int i = 0; i < ready_to_reduce.size(); i++) {
                 // Notify all nodes which tensor we'd like to reduce at this step.
                 auto name = ready_to_reduce[i];
-                bool error;
-                MPIResponse response = ConstructMPIResponse(
-                        state.message_table, name, &error);
+                MPIResponse response = ConstructMPIResponse(state.message_table, name);
 
                 std::string encoded_response;
                 response.SerializeToString(&encoded_response);
@@ -459,13 +514,8 @@ void BackgroundThreadLoop(MPIGlobalState& state) {
                              MPI_BYTE, r, TAG_NOTIFY, MPI_COMM_WORLD);
                 }
 
-                // Perform the reduction. All nodes should end up performing
-                // the same reduction.
-                if(error) {
-                    ReportReductionError(state.tensor_table, response);
-                } else {
-                    PerformReductionOrGather(state.tensor_table, response);
-                }
+                // Perform the reduction. All nodes should end up performing the same reduction.
+                PerformReductionOrGather(state.tensor_table, response);
             }
 
             // Notify all nodes that we are done with the reductions for this tick.
@@ -502,12 +552,7 @@ void BackgroundThreadLoop(MPIGlobalState& state) {
 
                 MPIResponse response;
                 response.ParseFromString(received_message);
-
-                if(response.response_type() == MPIResponse::ERROR) {
-                    ReportReductionError(state.tensor_table, response);
-                } else {
-                    PerformReductionOrGather(state.tensor_table, response);
-                }
+                PerformReductionOrGather(state.tensor_table, response);
             }
         }
     }
@@ -518,19 +563,20 @@ void BackgroundThreadLoop(MPIGlobalState& state) {
 Status InitializeMPIOnce() {
     // Ensure MPI is only initialized once.
     if(mpi_global.initialized_flag.test_and_set())
-        return Status::OK();
-
-    auto init_result = MPI_Init(NULL, NULL);
-    if(init_result != MPI_SUCCESS) {
-        return errors::Unknown("Could not initialize MPI; MPI_Init() failed.");
-    }
+        return mpi_global.init_status;
 
     // Start the MPI background thread, which assumes MPI is initialized
     mpi_global.background_thread = std::thread(BackgroundThreadLoop, std::ref(mpi_global));
 
-    return Status::OK();
+    // Wait to ensure that the background thread has finished initializing MPI. 
+    while(!mpi_global.initialization_done) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    return mpi_global.init_status;
 }
 
+// Convert a TensorFlow DataType to our MPIDataType.
 Status DataTypeToMPIType(DataType tf_dtype, MPIDataType* mpi_dtype) {
     if(tf_dtype == DT_FLOAT) {
         *mpi_dtype = TF_MPI_FLOAT32;
@@ -542,14 +588,13 @@ Status DataTypeToMPIType(DataType tf_dtype, MPIDataType* mpi_dtype) {
     return Status::OK();
 }
 
+// MPI must be initialized and the background thread must be running before
+// this function is called.
 void EnqueueTensorAllreduce(
         OpKernelContext* context,
         const Tensor& tensor,
         const std::string name,
         CommunicationDoneCallback callback) {
-    // Ensure that the MPI thread is running
-    InitializeMPIOnce();
-
     MPIDataType dtype;
     Status status = DataTypeToMPIType(tensor.dtype(), &dtype);
     if(!status.ok()) {
@@ -557,7 +602,11 @@ void EnqueueTensorAllreduce(
         return;
     }
 
+    int rank;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+
     MPIRequest message;
+    message.set_request_rank(rank);
     message.set_tensor_name(name);
     message.set_tensor_type(dtype);
     message.set_request_type(MPIRequest::ALLREDUCE);
@@ -571,14 +620,13 @@ void EnqueueTensorAllreduce(
     mpi_global.message_queue.push(message);
 }
 
+// MPI must be initialized and the background thread must be running before
+// this function is called.
 void EnqueueTensorAllgather(
         OpKernelContext* context,
         const Tensor& tensor,
         const std::string name,
         CommunicationDoneCallback callback) {
-    // Ensure that the MPI thread is running
-    InitializeMPIOnce();
-
     MPIDataType dtype;
     Status status = DataTypeToMPIType(tensor.dtype(), &dtype);
     if(!status.ok()) {
@@ -586,7 +634,11 @@ void EnqueueTensorAllgather(
         return;
     }
 
+    int rank;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+
     MPIRequest message;
+    message.set_request_rank(rank);
     message.set_tensor_name(name);
     message.set_tensor_type(dtype);
     message.set_request_type(MPIRequest::ALLGATHER);
@@ -611,9 +663,7 @@ class MPISizeOp : public OpKernel {
 
   void Compute(OpKernelContext* context) override {
     // Get the number of processes
-    int world_size;
-    OP_REQUIRES(context, MPI_Comm_size(MPI_COMM_WORLD, &world_size) == MPI_SUCCESS,
-            errors::Unknown("Could not get MPI Comm size; MPI_Comm_size() failed."));
+    int world_size = mpi_global.size;
 
     // Write integer to output tensor
     Tensor* output;
@@ -650,9 +700,7 @@ class MPIRankOp : public OpKernel {
 
   void Compute(OpKernelContext* context) override {
     // Get the processor index
-    int rank;
-    OP_REQUIRES(context, MPI_Comm_rank(MPI_COMM_WORLD, &rank) == MPI_SUCCESS,
-            errors::Unknown("Could not get MPI Comm rank; MPI_Comm_rank() failed."));
+    int rank = mpi_global.rank;
 
     // Write integer to output tensor
     Tensor* output;
