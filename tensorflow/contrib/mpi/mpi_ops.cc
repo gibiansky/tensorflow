@@ -106,9 +106,10 @@ bool IncrementTensorCount(
     if(table_iter == message_table->end()) {
         message_table->emplace(name, std::vector<MPIRequest>({msg}));
         table_iter = message_table->find(name);
+    } else {
+        table_iter->second.push_back(msg);
     }
 
-    table_iter->second.push_back(msg);
     int count = table_iter->second.size();
 
     return count == mpi_size;
@@ -274,6 +275,9 @@ MPIResponse ConstructMPIResponse(
         response.set_response_type(MPIResponse::ALLREDUCE);
     }
 
+    // Clear all queued up requests for this name. They are now taken care of
+    // by the constructed MPI response.
+    message_table->erase(it);
 
     return response;
 }
@@ -305,6 +309,10 @@ void PerformReductionOrGather(TensorTable& tensor_table, MPIResponse response) {
     OpKernelContext* context;
     CommunicationDoneCallback callback;
     std::tie(tensor, context, callback) = iter->second;
+
+    // Clear the tensor table of this tensor and its callbacks; the rest of
+    // this function takes care of it.
+    tensor_table.erase(iter);
 
     Tensor output;
     Status status;

@@ -67,6 +67,11 @@ class MPITests(tf.test.TestCase):
         send tensors of different rank or dimension."""
         with self.test_session() as session:
             rank = session.run(mpi.rank())
+            size = session.run(mpi.size())
+
+            # This test does not apply if there is only one worker.
+            if size == 1:
+                return
 
             # Same rank, different dimension
             tf.set_random_seed(1234)
@@ -90,6 +95,11 @@ class MPITests(tf.test.TestCase):
         send tensors of different type."""
         with self.test_session() as session:
             rank = session.run(mpi.rank())
+            size = session.run(mpi.size())
+
+            # This test does not apply if there is only one worker.
+            if size == 1:
+                return
 
             # Same rank, different dimension
             dims = [17 + rank] * 3
@@ -115,14 +125,13 @@ class MPITests(tf.test.TestCase):
                 self.assertEqual(list(gathered_tensor.shape),
                                  [17 * size] + [17] * (dim - 1))
 
-                rank_tensors = session.run(
-                    tf.split(value=gathered, axis=0,
-                             num_or_size_splits=size))
-
-                for i, rank_tensor in enumerate(rank_tensors):
+                for i in range(size):
+                    rank_tensor = tf.slice(gathered_tensor,
+                                           [i * 17] + [0] * (dim - 1),
+                                           [17] + [-1] * (dim - 1))
                     self.assertEqual(list(rank_tensor.shape), [17] * dim)
                     self.assertTrue(
-                        session.run(tf.reduce_all(rank_tensor == i)),
+                        session.run(tf.reduce_all(tf.equal(rank_tensor, i))),
                         "mpi.allgather produces incorrect gathered tensor")
 
     def test_mpi_allgather_variable_size(self):
@@ -146,15 +155,14 @@ class MPITests(tf.test.TestCase):
                 self.assertEqual(list(gathered_tensor.shape),
                                  [expected_size] + [17] * (dim - 1))
 
-                rank_tensors = session.run(
-                    tf.split_v(value=gathered, axis=0,
-                               num_or_size_splits=tensor_sizes))
-
-                for i, rank_tensor in enumerate(rank_tensors):
+                for i in range(size):
                     rank_size = [tensor_sizes[i]] + [17] * (dim - 1)
+                    rank_tensor = tf.slice(
+                        gathered, [sum(tensor_sizes[:i])] + [0] * (dim - 1),
+                        rank_size)
                     self.assertEqual(list(rank_tensor.shape), rank_size)
                     self.assertTrue(
-                        session.run(tf.reduce_all(rank_tensor == i)),
+                        session.run(tf.reduce_all(tf.equal(rank_tensor, i))),
                         "mpi.allgather produces incorrect gathered tensor")
 
     def test_mpi_allgather_error(self):
@@ -162,6 +170,11 @@ class MPITests(tf.test.TestCase):
         the first is different among the tensors being gathered."""
         with self.test_session() as session:
             rank = session.run(mpi.rank())
+            size = session.run(mpi.size())
+
+            # This test does not apply if there is only one worker.
+            if size == 1:
+                return
 
             tensor_size = [17] * 3
             tensor_size[rank] = 10 * (rank + 1)
@@ -174,6 +187,11 @@ class MPITests(tf.test.TestCase):
         differ among the processes"""
         with self.test_session() as session:
             rank = session.run(mpi.rank())
+            size = session.run(mpi.size())
+
+            # This test does not apply if there is only one worker.
+            if size == 1:
+                return
 
             tensor_size = [17] * 3
             dtype = tf.int32 if rank % 2 == 0 else tf.float32
