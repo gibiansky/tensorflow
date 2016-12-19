@@ -28,43 +28,68 @@ from tensorflow.python.platform import resource_loader
 from tensorflow.python.platform import tf_logging as logging
 
 
-def size():
-  """Create an op that reads the current MPI communicator size.
+def size(name=None):
+  """An op which returns the number of MPI processes.
+
+  This is equivalent to running `MPI_Comm_size(MPI_COMM_WORLD, ...)` to get the
+  size of the global communicator.
 
   Returns:
-    An integer scalar containing the number of active MPI processes.
+    An integer scalar containing the number of MPI processes.
   """
-  return gen_mpi_op_wrapper_py.mpi_size()
+  return gen_mpi_op_wrapper_py.mpi_size(name=name)
 
 
 ops.NotDifferentiable('MPISize')
 
 
-def rank():
-  """Create an op that reads the MPI rank of the current process.
+def rank(name=None):
+  """An op which returns the MPI rank of the calling process.
+
+  This is equivalent to running `MPI_Comm_rank(MPI_COMM_WORLD, ...)` to get the
+  rank of the current process in the global communicator.
 
   Returns:
     An integer scalar with the MPI rank of the calling process.
   """
-  return gen_mpi_op_wrapper_py.mpi_rank()
+  return gen_mpi_op_wrapper_py.mpi_rank(name=name)
 
 
 ops.NotDifferentiable('MPIRank')
 
 
-def allreduce(tensor):
-  """Create an op that reduces (sums) a tensor across many MPI processes.
+def allreduce(tensor, name=None):
+  """An op which sums an input tensor over all the MPI processes.
+
+  The reduction operation is keyed by the name of the op. The tensor type and
+  shape must be the same on all MPI processes for a given name. The reduction
+  will not start until all processes are ready to send and receive the tensor.
+
+  Returns:
+    A tensor of the same shape and type as `tensor`, summed across all
+    processes.
   """
-  return gen_mpi_op_wrapper_py.mpi_allreduce(tensor)
+  return gen_mpi_op_wrapper_py.mpi_allreduce(tensor, name=name)
 
 
 ops.NotDifferentiable('MPIAllreduce')
 
 
-def allgather(tensor):
-  """Create an op that gathers a tensor across many MPI processes.
+def allgather(tensor, name=None):
+  """An op which concatenates the input tensor with the same input tensor on
+  all other MPI processes.
+
+  The concatenation is done on the first dimension, so the input tensors on the
+  different processes must have the same rank and shape, except for the first
+  dimension, which is allowed to be different.
+
+  Returns:
+    A tensor of the same type as `tensor`, concatenated on dimension zero
+    across all processes. The shape is identical to the input shape, except for
+    the first dimension, which may be greater and is the sum of all first
+    dimensions of the tensors in different MPI processes.
   """
-  return gen_mpi_op_wrapper_py.mpi_allgather(tensor)
+  return gen_mpi_op_wrapper_py.mpi_allgather(tensor, name=name)
 
 
 ops.NotDifferentiable('MPIAllgather')
@@ -82,19 +107,20 @@ def _load_library(name, op_list=None):
     NameError if one of the required ops is missing.
   """
   try:
-    filename = resource_loader.get_path_to_datafile(name)
-    library = load_library.load_op_library(filename)
-    for expected_op in (op_list or []):
-      for lib_op in library.OP_LIST.op:
-        if lib_op.name == expected_op:
-          break
-      else:
-        raise NameError('Could not find operator %s in dynamic library %s' %
-                        (expected_op, name))
+      filename = resource_loader.get_path_to_datafile(name)
+      library = load_library.load_op_library(filename)
+      for expected_op in (op_list or []):
+          for lib_op in library.OP_LIST.op:
+              if lib_op.name == expected_op:
+                  break
+          else:
+              raise NameError(
+                  'Could not find operator %s in dynamic library %s' %
+                  (expected_op, name))
   except errors.NotFoundError:
-    logging.warning('%s file could not be loaded.', name)
+      logging.warning('%s file could not be loaded.', name)
 
 
 if os.name != 'nt':
-  _load_library('mpi.so', ['MPISize', 'MPIRank',
-                           'MPIAllgather', 'MPIAllreduce'])
+    _load_library('mpi.so', ['MPISize', 'MPIRank',
+                             'MPIAllgather', 'MPIAllreduce'])
