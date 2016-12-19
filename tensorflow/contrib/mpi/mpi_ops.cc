@@ -133,7 +133,7 @@ struct MPIGlobalState {
         // destructor cannot be called.
         if(background_thread.joinable()) {
             shut_down = true;
-            background_thread.join();
+            background_thread.detach();
         }
     }
 };
@@ -338,6 +338,7 @@ MPIResponse ConstructMPIResponse(std::unique_ptr<MessageTable>& message_table, s
     return response;
 }
 
+// Process an MPIResponse by doing a reduction, a gather, or raising an error.
 void PerformReductionOrGather(TensorTable& tensor_table, MPIResponse response) {
     // We should never fail at finding this key in the tensor table.
     auto name = response.tensor_name();
@@ -394,7 +395,49 @@ void PerformReductionOrGather(TensorTable& tensor_table, MPIResponse response) {
 }
 
 // The MPI background thread loop coordinates all the MPI processes and the
-// tensor reductions.
+// tensor reductions. The design of the communicator mechanism is limited by a few considerations:
+//
+//      1. Some MPI implementations require all MPI calls to happen from a single thread.
+//      Since TensorFlow may use several threads for graph processing, this means we must have
+//      our own dedicated thread for dealing with MPI.
+//      2. We want to gracefully handle errors, when MPI processes do not properly agree upon
+//      what should happen (such as mismatched types or shapes). To do so requires the MPI processes
+//      to know about the shapes and types of the relevant tensors on the other processes.
+//      3. The MPI reductions and gathers should be able to happen in parallel
+//      with other ongoing operations. This means that they cannot be blocking
+//      ops, but rather must be async ops, the execution of which happens on a
+//      separate thread.
+//      4. We cannot guarantee that all the MPI processes reduce their tensors
+//      in the same order, so we cannot dispatch one thread per tensor,
+//      otherwise we may end up dispatching many blocked threads and never make
+//      progress if we have a thread pool limit.
+//
+// The coordinator currently follows a master-worker paradigm. Rank zero acts
+// as the master (the "coordinator"), whereas all other ranks are simply
+// workers. Each rank runs its own background thread which progresses in ticks.
+// In each tick, the following actions happen:
+//
+//      a) The workers send an MPIRequest to the coordinator, indicating what
+//      they would like to do (which tensor they would like to gather and
+//      reduce, as well as their shape and type). They repeat this for every
+//      tensor that they would like to operate on.
+//
+//      b) The workers send an empty "DONE" message to the coordinator to
+//      indicate that there are no more tensors they wish to operate on.
+//
+//      c) The coordinator receives the MPIRequests from the workers, as well
+//      as from its own TensorFlow ops, and stores them in a request table. The
+//      coordinator continues to receive MPIRequest messages until it has
+//      received MPI_SIZE number of empty "DONE" messages.
+//
+//      d) The coordinator finds all tensors that are ready to be reduced,
+//      gathered, or all operations that result in an error. For each of those,
+//      it sends an MPIResponse to all the workers. When no more MPIResponses
+//      are available, it sends an empty "DONE" response to the workers.
+//
+//      e) The workers listen for MPIResponse messages, processing each one by
+//      doing the required reduce or gather, until they receive an empty "DONE"
+//      message from the coordinator. At that point, the tick ends.
 void BackgroundThreadLoop(MPIGlobalState& state) {
     // Initialize MPI. This must happen on the background thread, since not all
     // MPI implementations support being called from multiple threads.
@@ -556,6 +599,8 @@ void BackgroundThreadLoop(MPIGlobalState& state) {
             }
         }
     }
+
+    MPI_Finalize();
 }
 
 // Initialize MPI and start the MPI background thread. Ensure that this is
