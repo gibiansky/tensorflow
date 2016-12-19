@@ -58,7 +58,7 @@ def rank(name=None):
 ops.NotDifferentiable('MPIRank')
 
 
-def allreduce(tensor, name=None):
+def _allreduce(tensor, name=None):
   """An op which sums an input tensor over all the MPI processes.
 
   The reduction operation is keyed by the name of the op. The tensor type and

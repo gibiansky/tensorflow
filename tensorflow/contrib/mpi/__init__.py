@@ -113,12 +113,13 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-from tensorflow.train import Optimizer
+import tensorflow as tf
 
 from tensorflow.contrib.mpi.mpi_ops import size
 from tensorflow.contrib.mpi.mpi_ops import rank
 from tensorflow.contrib.mpi.mpi_ops import allgather
-import tensorflow.contrib.mpi.mpi_ops as mpi_ops
+from tensorflow.contrib.mpi.mpi_ops import _allreduce
+
 
 def allreduce(tensor, average=True):
     """Perform an MPI allreduce on a tf.Tensor or tf.IndexedSlices.
@@ -142,17 +143,18 @@ def allreduce(tensor, average=True):
 
         # To make this operation into an average, divide all gathered values by
         # the MPI size.
-        new_values = values / mpi_size if average else values
-        return tf.IndexedSlices(values / mpi_size, indices,
+        new_values = tf.div(values, mpi_size) if average else values
+        return tf.IndexedSlices(new_values, indices,
                                 dense_shape=tensor.dense_shape)
     else:
         mpi_size = tf.cast(size(), tensor.dtype)
-        summed_tensor = mpi_ops.allreduce(tensor)
-        new_tensor = summed_tensor / mpi_size if average else summed_tensor
-        return new_tensor / mpi_size
+        summed_tensor = _allreduce(tensor)
+        new_tensor = (tf.div(summed_tensor, mpi_size)
+                      if average else summed_tensor)
+        return new_tensor
 
 
-class DistributedOptimizer(Optimizer):
+class DistributedOptimizer(tf.train.Optimizer):
     """An optimizer that wraps another tf.Optimizer, using an MPI allreduce to
     average gradient values before applying gradients to model weights."""
 
