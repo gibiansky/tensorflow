@@ -63,12 +63,15 @@ model.
 
 Instead of centralizing the reduction and having one primary reducer, we can
 implement a distributed allreduce or allgather. A bandwidth-optimal allreduce
-will end up sending 2(N - 1) values for every value in the input tensor [1],
-and can be implemented with a ring allreduce [2]. This module implements
-bandwidth-optimal ring allreduce and ring allgather operations using MPI; by
-choosing a hardware-appropriate MPI implementation (such as OpenMPI with
-CUDA-IPC support), you can train large models with synchronous gradient descent
-with minimal communication overhead.
+will end up sending 2(N - 1) values for every value in the input tensor,
+and can be implemented with a ring allreduce [1]. (Intuitively, a linear reduce
+requires at least (N - 1) sends between the different nodes, and a broadcast of
+the result also requires (N - 1) sends, for a total of 2 (N - 1); these two
+steps cannot be combined in a clever way to reduce the number of required
+sends.) This module implements bandwidth-optimal ring allreduce and ring
+allgather operations using MPI; by choosing a hardware-appropriate MPI
+implementation (such as OpenMPI with CUDA-IPC support), you can train large
+models with synchronous gradient descent with minimal communication overhead.
 
 In addition to the `allreduce` and `allgather` functions, a convenience
 `DistributedOptimizer` wrapper is provided to simplify using these functions
@@ -103,6 +106,9 @@ with tf.Session() as session:
     _, l = session.run([train, avg_loss], feed_dict=feed_dict)
     print("Average Loss:", l)
 ```
+
+[1] Patarasuk, Pitch and Yuan, Xin. "Bandwidth Optimal All-reduce Algorithms
+for Clusters of Workstations".
 
 @@DistributedOptimizer
 @@allreduce
