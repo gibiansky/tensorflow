@@ -70,6 +70,11 @@ namespace mpi {
 
 namespace {
 
+// Return true if the templated type is GPUDevice, otherwise false.
+template<typename T> bool IsGPUDevice();
+template<> bool IsGPUDevice<GPUDevice>() { return true; };
+template<> bool IsGPUDevice<CPUDevice>() { return false; };
+
 // A callback to call after the MPI communication completes. Since the
 // allreduce and allgather ops are asynchronous, this callback is what resumes
 // computation after the reduction is completed.
@@ -353,7 +358,8 @@ void PerformReductionOrGather(TensorTable& tensor_table, MPIResponse response) {
     Tensor tensor;
     OpKernelContext* context;
     CommunicationDoneCallback callback;
-    std::tie(tensor, context, callback) = iter->second;
+    bool on_gpu;
+    std::tie(tensor, context, on_gpu, callback) = iter->second;
 
     // Clear the tensor table of this tensor and its callbacks; the rest of
     // this function takes care of it.
@@ -370,17 +376,21 @@ void PerformReductionOrGather(TensorTable& tensor_table, MPIResponse response) {
         }
 
         if(tensor.dtype() == DT_FLOAT) {
-            status = RingAllgather<CPUDevice, float>(context, tensor, &output, tensor_sizes);
+            status = on_gpu ? RingAllgather<GPUDevice, float>(context, tensor, &output, tensor_sizes)
+                            : RingAllgather<CPUDevice, float>(context, tensor, &output, tensor_sizes);
         } else if(tensor.dtype() == DT_INT32) {
-            status = RingAllgather<CPUDevice, int>(context, tensor, &output, tensor_sizes);
+            status = on_gpu ? RingAllgather<GPUDevice, int>(context, tensor, &output, tensor_sizes)
+                            : RingAllgather<CPUDevice, int>(context, tensor, &output, tensor_sizes);
         } else {
             status = errors::Unknown("Invalid tensor type for MPI allgather.");
         }
     } else if(response.response_type() == MPIResponse::ALLREDUCE) {
         if(tensor.dtype() == DT_FLOAT) {
-            status = RingAllreduce<CPUDevice, float>(context, tensor, &output);
+            status = on_gpu ? RingAllreduce<GPUDevice, float>(context, tensor, &output)
+                            : RingAllreduce<CPUDevice, float>(context, tensor, &output);
         } else if(tensor.dtype() == DT_INT32) {
-            status = RingAllreduce<CPUDevice, int>(context, tensor, &output);
+            status = on_gpu ? RingAllreduce<GPUDevice, int>(context, tensor, &output)
+                            : RingAllreduce<CPUDevice, int>(context, tensor, &output);
         } else {
             status = errors::Unknown("Invalid tensor type for MPI allreduce.");
         }
@@ -640,6 +650,7 @@ void EnqueueTensorAllreduce(
         OpKernelContext* context,
         const Tensor& tensor,
         const std::string name,
+        const bool on_gpu,
         CommunicationDoneCallback callback) {
     MPIDataType dtype;
     Status status = DataTypeToMPIType(tensor.dtype(), &dtype);
@@ -661,7 +672,7 @@ void EnqueueTensorAllreduce(
     }
 
     std::lock_guard<std::mutex> guard(mpi_global.mutex);
-    std::tuple<Tensor, OpKernelContext*, CommunicationDoneCallback> record(tensor, context, callback);
+    std::tuple<Tensor, OpKernelContext*, bool, CommunicationDoneCallback> record(tensor, context, on_gpu, callback);
     mpi_global.tensor_table.emplace(name, record);
     mpi_global.message_queue.push(message);
 }
@@ -672,6 +683,7 @@ void EnqueueTensorAllgather(
         OpKernelContext* context,
         const Tensor& tensor,
         const std::string name,
+        const bool on_gpu,
         CommunicationDoneCallback callback) {
     MPIDataType dtype;
     Status status = DataTypeToMPIType(tensor.dtype(), &dtype);
@@ -693,7 +705,7 @@ void EnqueueTensorAllgather(
     }
 
     std::lock_guard<std::mutex> guard(mpi_global.mutex);
-    std::tuple<Tensor, OpKernelContext*, CommunicationDoneCallback> record(tensor, context, callback);
+    std::tuple<Tensor, OpKernelContext*, bool, CommunicationDoneCallback> record(tensor, context, on_gpu, callback);
     mpi_global.tensor_table.emplace(name, record);
     mpi_global.message_queue.push(message);
 }
@@ -721,6 +733,9 @@ class MPISizeOp : public OpKernel {
 };
 
 REGISTER_KERNEL_BUILDER(Name("MPISize").Device(DEVICE_CPU), MPISizeOp);
+#ifdef GOOGLE_CUDA
+REGISTER_KERNEL_BUILDER(Name("MPISize").Device(DEVICE_GPU), MPISizeOp);
+#endif
 
 REGISTER_OP("MPISize")
     .Output("size: int32")
@@ -758,6 +773,9 @@ class MPIRankOp : public OpKernel {
 };
 
 REGISTER_KERNEL_BUILDER(Name("MPIRank").Device(DEVICE_CPU), MPIRankOp);
+#ifdef GOOGLE_CUDA
+REGISTER_KERNEL_BUILDER(Name("MPIRank").Device(DEVICE_GPU), MPIRankOp);
+#endif
 
 REGISTER_OP("MPIRank")
     .Output("rank: int32")
@@ -775,6 +793,7 @@ rank:   Rank of the calling process.
 )doc");
 
 // Op to get the current MPI Rank.
+template <typename Device>
 class MPIAllreduceOp : public AsyncOpKernel {
  public:
   explicit MPIAllreduceOp(OpKernelConstruction* context) : AsyncOpKernel(context) {
@@ -782,11 +801,13 @@ class MPIAllreduceOp : public AsyncOpKernel {
   }
 
   void ComputeAsync(OpKernelContext* context, DoneCallback done) override {
+      bool on_gpu = IsGPUDevice<Device>();
       auto device_context = context->op_device_context();
       auto node_name = name();
       auto callback = [node_name, done, context] {
         auto tensor = context->input(0);
-        EnqueueTensorAllreduce(context, tensor, node_name, [node_name, done, context](StatusOr<Tensor> status) {
+        EnqueueTensorAllreduce(context, tensor, node_name, on_gpu,
+                               [node_name, done, context](StatusOr<Tensor> status) {
             if(status.ok()) {
                 Tensor output = status.ValueOrDie();
                 context->set_output(0, output);
@@ -809,9 +830,9 @@ class MPIAllreduceOp : public AsyncOpKernel {
   }
 };
 
-REGISTER_KERNEL_BUILDER(Name("MPIAllreduce").Device(DEVICE_CPU), MPIAllreduceOp);
+REGISTER_KERNEL_BUILDER(Name("MPIAllreduce").Device(DEVICE_CPU), MPIAllreduceOp<CPUDevice>);
 #ifdef GOOGLE_CUDA
-REGISTER_KERNEL_BUILDER(Name("MPIAllreduce").Device(DEVICE_GPU), MPIAllreduceOp);
+REGISTER_KERNEL_BUILDER(Name("MPIAllreduce").Device(DEVICE_GPU), MPIAllreduceOp<GPUDevice>);
 #endif
 
 REGISTER_OP("MPIAllreduce")
@@ -835,6 +856,7 @@ Output
     sum:    A tensor with the same shape as `tensor`, summed across all MPI processes.
 )doc");
 
+template <typename Device>
 class MPIAllgatherOp : public AsyncOpKernel {
  public:
   explicit MPIAllgatherOp(OpKernelConstruction* context) : AsyncOpKernel(context) {
@@ -842,11 +864,13 @@ class MPIAllgatherOp : public AsyncOpKernel {
   }
 
   void ComputeAsync(OpKernelContext* context, DoneCallback done) override {
+      bool on_gpu = IsGPUDevice<Device>();
       auto device_context = context->op_device_context();
       auto node_name = name();
       auto callback = [node_name, done, context] {
         auto tensor = context->input(0);
-        EnqueueTensorAllgather(context, tensor, node_name, [node_name, done, context](StatusOr<Tensor> status) {
+        EnqueueTensorAllgather(context, tensor, node_name, on_gpu,
+                               [node_name, done, context](StatusOr<Tensor> status) {
             if(status.ok()) {
                 Tensor output = status.ValueOrDie();
                 context->set_output(0, output);
@@ -869,9 +893,9 @@ class MPIAllgatherOp : public AsyncOpKernel {
   }
 };
 
-REGISTER_KERNEL_BUILDER(Name("MPIAllgather").Device(DEVICE_CPU), MPIAllgatherOp);
+REGISTER_KERNEL_BUILDER(Name("MPIAllgather").Device(DEVICE_CPU), MPIAllgatherOp<CPUDevice>);
 #ifdef GOOGLE_CUDA
-REGISTER_KERNEL_BUILDER(Name("MPIAllgather").Device(DEVICE_GPU), MPIAllgatherOp);
+REGISTER_KERNEL_BUILDER(Name("MPIAllgather").Device(DEVICE_GPU), MPIAllgatherOp<GPUDevice>);
 #endif
 
 REGISTER_OP("MPIAllgather")
