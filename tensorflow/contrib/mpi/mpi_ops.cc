@@ -139,7 +139,7 @@ struct MPIGlobalState {
         // destructor cannot be called.
         if(background_thread.joinable()) {
             shut_down = true;
-            background_thread.detach();
+            background_thread.join();
         }
     }
 };
@@ -478,7 +478,9 @@ void BackgroundThreadLoop(MPIGlobalState& state) {
             std::unique_ptr<MessageTable>(new MessageTable());
     }
 
-    while(!state.shut_down) {
+    // The coordinator sends a SHUTDOWN message to trigger shutdown.
+    bool should_shut_down = false;
+    do {
         // This delay determines thread frequency and MPI message latency
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
@@ -573,8 +575,15 @@ void BackgroundThreadLoop(MPIGlobalState& state) {
             }
 
             // Notify all nodes that we are done with the reductions for this tick.
+            MPIMessage done_response;
+            should_shut_down = state.shut_down;
+            done_response.set_response_type(
+                     should_shut_down ? MPIResponse::SHUTDOWN : MPIResponse::DONE);
+            std::string encoded_response;
+            done_response.SerializeToString(&encoded_response);
             for(int r = 1; r < size; r++) {
-                MPI_Send(NULL, 0, MPI_BYTE, r, TAG_NOTIFY, MPI_COMM_WORLD);
+                MPI_Send(encoded_response.c_str(), encoded_response.length() + 1,
+                         MPI_BYTE, r, TAG_NOTIFY, MPI_COMM_WORLD);
             }
         } else {
             // Notify the coordinator that this node is done sending messages.
@@ -591,12 +600,6 @@ void BackgroundThreadLoop(MPIGlobalState& state) {
                 int msg_length;
                 MPI_Get_count(&status, MPI_BYTE, &msg_length);
 
-                // If the length is zero, this is a DONE message.
-                if(msg_length == 0) {
-                    MPI_Recv(NULL, 0, MPI_BYTE, 0, TAG_NOTIFY, MPI_COMM_WORLD, &status);
-                    break;
-                }
-
                 // Get tensor name from MPI into an std::string.
                 char* buffer = new char[msg_length];
                 MPI_Recv(buffer, msg_length, MPI_BYTE, 0,
@@ -606,10 +609,19 @@ void BackgroundThreadLoop(MPIGlobalState& state) {
 
                 MPIResponse response;
                 response.ParseFromString(received_message);
-                PerformReductionOrGather(state.tensor_table, response);
+                if(response.response_type() == MPIMessage::DONE) {
+                    // No more messages this tick
+                    break;
+                } else if(response.response_type() == MPIMessage::SHUTDOWN) {
+                    // No more messages this tick, and the background thread should shut down
+                    should_shut_down = true;
+                } else {
+                    // Process the current message
+                    PerformReductionOrGather(state.tensor_table, response);
+                }
             }
         }
-    }
+    } while(!should_shut_down);
 
     MPI_Finalize();
 }
