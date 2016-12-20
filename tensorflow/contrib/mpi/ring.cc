@@ -6,6 +6,8 @@
 #include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
 #include "tensorflow/core/framework/tensor_types.h"
 
+// Needed to avoid header issues
+#define OMPI_SKIP_MPICXX
 #include "tensorflow/contrib/mpi/ring.h"
 #include "third_party/mpi/mpi.h"
 

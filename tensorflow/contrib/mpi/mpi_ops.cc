@@ -24,6 +24,7 @@
 #include "tensorflow/stream_executor/stream.h"
 #include "tensorflow/stream_executor/lib/statusor.h"
 
+#define OMPI_SKIP_MPICXX
 #include "third_party/mpi/mpi.h"
 #include "tensorflow/contrib/mpi/ring.h"
 #include "tensorflow/contrib/mpi/mpi_message.pb.h"
