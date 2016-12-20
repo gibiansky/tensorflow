@@ -92,10 +92,23 @@ class MPITests(tf.test.TestCase):
                 tf.set_random_seed(1234)
                 tensor = tf.random_uniform([17] * dim, -100, 100,
                                            dtype=dtype)
-                summed = mpi.allreduce(tensor)
+                summed = mpi.allreduce(tensor, average=False)
                 multiplied = tensor * size
                 max_difference = tf.reduce_max(tf.abs(summed - multiplied))
-                self.assertTrue(session.run(max_difference) == 0,
+
+                # Threshold for floating point equality depends on number of
+                # ranks, since we're comparing against precise multiplication.
+                if size <= 3:
+                    threshold = 0
+                elif size < 10:
+                    threshold = 1e-4
+                elif size < 15:
+                    threshold = 5e-4
+                else:
+                    break
+
+                diff = session.run(max_difference)
+                self.assertTrue(diff <= threshold,
                                 "mpi.allreduce produces incorrect results")
 
     def test_mpi_allreduce_error(self):
@@ -181,7 +194,13 @@ class MPITests(tf.test.TestCase):
             dtypes = tf.int32, tf.float32
             dims = 1, 2, 3
             for device, dtype, dim in itertools.product(devices, dtypes, dims):
-                tensor_sizes = [17, 32, 81, 12, 15, 23, 22][:size]
+                # Support tests up to MPI Size of 35
+                if size > 35:
+                    break
+
+                tensor_sizes = [17, 32, 81, 12, 15, 23, 22] * 5
+                tensor_sizes = tensor_sizes[:size]
+
                 tensor = tf.ones([tensor_sizes[rank]] + [17] * (dim - 1),
                                  dtype=dtype) * rank
                 gathered = mpi.allgather(tensor)
@@ -213,7 +232,7 @@ class MPITests(tf.test.TestCase):
                 return
 
             tensor_size = [17] * 3
-            tensor_size[rank] = 10 * (rank + 1)
+            tensor_size[1] = 10 * (rank + 1)
             tensor = tf.ones(tensor_size, dtype=tf.float32) * rank
             with self.assertRaises(tf.errors.FailedPreconditionError):
                 session.run(mpi.allgather(tensor))
