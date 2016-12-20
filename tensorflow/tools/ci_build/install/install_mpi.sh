@@ -19,5 +19,5 @@ mpiexec=$(which mpiexec)
 if [[ -z "$mpiexec_location" ]]; then
     # Install dependencies from ubuntu deb repository.
     apt-get update
-    apt-get install -y --no-install-recommends mpich2
+    apt-get install -y --no-install-recommends openmpi-bin libopenmpi-dev
 fi

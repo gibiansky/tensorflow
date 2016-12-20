@@ -2,7 +2,7 @@
 #   contains parts of TensorFlow that are experimental or unstable and which are not supported.
 
 # The configure script may change this to True.
-WITH_MPI_SUPPORT = True
+WITH_MPI_SUPPORT = False
 
 licenses(["notice"])  # Apache 2.0
 
