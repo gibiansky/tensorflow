@@ -101,7 +101,7 @@ typedef std::unordered_map<std::string, std::vector<MPIRequest> > MessageTable;
 struct MPIGlobalState {
     // An atomic boolean which is set to true when MPI is initialized.
     // This ensures that MPI_Init is never called twice.
-    std::atomic_flag initialized_flag;
+    std::atomic_flag initialized_flag = ATOMIC_FLAG_INIT;
 
     // A mutex that needs to be used whenever MPI operations are done.
     std::mutex mutex;
@@ -116,7 +116,7 @@ struct MPIGlobalState {
     std::thread background_thread;
 
     // Whether the background thread should shutdown.
-    bool shut_down;
+    bool shut_down = false;
 
     // Only exists on the coordinator node (rank zero). Maintains a count of
     // how many nodes are ready to allreduce every tensor (keyed by tensor
@@ -124,14 +124,14 @@ struct MPIGlobalState {
     std::unique_ptr<MessageTable> message_table;
 
     // Whether MPI_Init has been completed on the background thread.
-    bool initialization_done;
+    bool initialization_done = false;
 
     // Whether MPI_Init succeeded on the background thread.
     Status init_status;
 
     // The MPI rank and size.
-    int rank;
-    int size;
+    int rank = 0;
+    int size = 1;
 
     ~MPIGlobalState() {
         // Make sure that the destructor of the background thread is safe to
@@ -145,10 +145,7 @@ struct MPIGlobalState {
 };
 
 // All the MPI state that must be stored globally per-process.
-static MPIGlobalState mpi_global = {
-    .initialized_flag = ATOMIC_FLAG_INIT,
-    .initialization_done = false
-};
+static MPIGlobalState mpi_global;
 
 // For clarify in argument lists.
 #define RANK_ZERO   0
