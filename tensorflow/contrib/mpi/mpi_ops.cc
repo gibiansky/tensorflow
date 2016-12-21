@@ -21,7 +21,10 @@
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/shape_inference.h"
 
+#ifdef GOOGLE_CUDA
 #include "tensorflow/stream_executor/stream.h"
+#endif
+
 #include "tensorflow/stream_executor/lib/statusor.h"
 
 #define OMPI_SKIP_MPICXX
@@ -841,12 +844,16 @@ class MPIAllreduceOp : public AsyncOpKernel {
       // get a stream to enqueue this on. On a CPU this op is called when the
       // data is already available, so we can just immediately do the allreduce;
       // we don't have to wait for the data to get populated.
+#ifdef GOOGLE_CUDA
       if(device_context == nullptr) {
           callback();
       } else {
         auto stream = device_context->stream();
         stream->ThenDoHostCallback(callback);
       }
+#else
+      callback();
+#endif
   }
 };
 
@@ -904,12 +911,16 @@ class MPIAllgatherOp : public AsyncOpKernel {
       // get a stream to enqueue this on. On a CPU this op is called when the
       // data is already available, so we can just immediately do the allgather;
       // we don't have to wait for the data to get populated.
+#ifdef GOOGLE_CUDA
       if(device_context == nullptr) {
           callback();
       } else {
         auto stream = device_context->stream();
         stream->ThenDoHostCallback(callback);
       }
+#else
+      callback();
+#endif
   }
 };
 
