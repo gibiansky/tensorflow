@@ -85,7 +85,7 @@ typedef std::function<void(StatusOr<Tensor>)> CommunicationDoneCallback;
 //  - Tensor: The tensor data.
 //  - OpKernelContext*: A context used to allocate the output or temporary values.
 //  - CommunicationDoneCallback: A callback to call with the result.
-typedef std::unordered_map<std::string, std::tuple<Tensor, OpKernelContext*, CommunicationDoneCallback> > TensorTable;
+typedef std::unordered_map<std::string, std::tuple<Tensor, OpKernelContext*, bool, CommunicationDoneCallback> > TensorTable;
 
 // Table for storing Tensor metadata on rank zero. This is used for error
 // checking and size calculations, as well as determining when a reduction is
@@ -365,6 +365,14 @@ void PerformReductionOrGather(TensorTable& tensor_table, MPIResponse response) {
     // this function takes care of it.
     tensor_table.erase(iter);
 
+    // Use CPUDevice instead of GPUDevice if no CUDA, to ensure we don't
+    // link to non-existent symbols.
+#ifdef GOOGLE_CUDA
+#define GPU_DEVICE_IF_CUDA  GPUDevice
+#else
+#define GPU_DEVICE_IF_CUDA  CPUDevice
+#endif
+
     Tensor output;
     Status status;
     if(response.response_type() == MPIResponse::ALLGATHER) {
@@ -376,20 +384,20 @@ void PerformReductionOrGather(TensorTable& tensor_table, MPIResponse response) {
         }
 
         if(tensor.dtype() == DT_FLOAT) {
-            status = on_gpu ? RingAllgather<GPUDevice, float>(context, tensor, &output, tensor_sizes)
+            status = on_gpu ? RingAllgather<GPU_DEVICE_IF_CUDA, float>(context, tensor, &output, tensor_sizes)
                             : RingAllgather<CPUDevice, float>(context, tensor, &output, tensor_sizes);
         } else if(tensor.dtype() == DT_INT32) {
-            status = on_gpu ? RingAllgather<GPUDevice, int>(context, tensor, &output, tensor_sizes)
+            status = on_gpu ? RingAllgather<GPU_DEVICE_IF_CUDA, int>(context, tensor, &output, tensor_sizes)
                             : RingAllgather<CPUDevice, int>(context, tensor, &output, tensor_sizes);
         } else {
             status = errors::Unknown("Invalid tensor type for MPI allgather.");
         }
     } else if(response.response_type() == MPIResponse::ALLREDUCE) {
         if(tensor.dtype() == DT_FLOAT) {
-            status = on_gpu ? RingAllreduce<GPUDevice, float>(context, tensor, &output)
+            status = on_gpu ? RingAllreduce<GPU_DEVICE_IF_CUDA, float>(context, tensor, &output)
                             : RingAllreduce<CPUDevice, float>(context, tensor, &output);
         } else if(tensor.dtype() == DT_INT32) {
-            status = on_gpu ? RingAllreduce<GPUDevice, int>(context, tensor, &output)
+            status = on_gpu ? RingAllreduce<GPU_DEVICE_IF_CUDA, int>(context, tensor, &output)
                             : RingAllreduce<CPUDevice, int>(context, tensor, &output);
         } else {
             status = errors::Unknown("Invalid tensor type for MPI allreduce.");
@@ -444,11 +452,13 @@ void PerformReductionOrGather(TensorTable& tensor_table, MPIResponse response) {
 //      d) The coordinator finds all tensors that are ready to be reduced,
 //      gathered, or all operations that result in an error. For each of those,
 //      it sends an MPIResponse to all the workers. When no more MPIResponses
-//      are available, it sends an empty "DONE" response to the workers.
+//      are available, it sends a "DONE" response to the workers. If the process
+//      is being shutdown, it instead sends a "SHUTDOWN" response.
 //
 //      e) The workers listen for MPIResponse messages, processing each one by
-//      doing the required reduce or gather, until they receive an empty "DONE"
-//      message from the coordinator. At that point, the tick ends.
+//      doing the required reduce or gather, until they receive a "DONE"
+//      response from the coordinator. At that point, the tick ends.
+//      If instead of "DONE" they receive "SHUTDOWN", they exit their background loop.
 void BackgroundThreadLoop(MPIGlobalState& state) {
     // Initialize MPI. This must happen on the background thread, since not all
     // MPI implementations support being called from multiple threads.
@@ -482,7 +492,7 @@ void BackgroundThreadLoop(MPIGlobalState& state) {
     bool should_shut_down = false;
     do {
         // This delay determines thread frequency and MPI message latency
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
 
         // The rest of this loop happens under the MPI lock
         std::lock_guard<std::mutex> guard(state.mutex);
@@ -575,7 +585,7 @@ void BackgroundThreadLoop(MPIGlobalState& state) {
             }
 
             // Notify all nodes that we are done with the reductions for this tick.
-            MPIMessage done_response;
+            MPIResponse done_response;
             should_shut_down = state.shut_down;
             done_response.set_response_type(
                      should_shut_down ? MPIResponse::SHUTDOWN : MPIResponse::DONE);
@@ -609,12 +619,13 @@ void BackgroundThreadLoop(MPIGlobalState& state) {
 
                 MPIResponse response;
                 response.ParseFromString(received_message);
-                if(response.response_type() == MPIMessage::DONE) {
+                if(response.response_type() == MPIResponse::DONE) {
                     // No more messages this tick
                     break;
-                } else if(response.response_type() == MPIMessage::SHUTDOWN) {
+                } else if(response.response_type() == MPIResponse::SHUTDOWN) {
                     // No more messages this tick, and the background thread should shut down
                     should_shut_down = true;
+                    break;
                 } else {
                     // Process the current message
                     PerformReductionOrGather(state.tensor_table, response);
@@ -816,7 +827,7 @@ class MPIAllreduceOp : public AsyncOpKernel {
       bool on_gpu = IsGPUDevice<Device>();
       auto device_context = context->op_device_context();
       auto node_name = name();
-      auto callback = [node_name, done, context] {
+      auto callback = [node_name, done, context, on_gpu] {
         auto tensor = context->input(0);
         EnqueueTensorAllreduce(context, tensor, node_name, on_gpu,
                                [node_name, done, context](StatusOr<Tensor> status) {
@@ -879,7 +890,7 @@ class MPIAllgatherOp : public AsyncOpKernel {
       bool on_gpu = IsGPUDevice<Device>();
       auto device_context = context->op_device_context();
       auto node_name = name();
-      auto callback = [node_name, done, context] {
+      auto callback = [node_name, done, context, on_gpu] {
         auto tensor = context->input(0);
         EnqueueTensorAllgather(context, tensor, node_name, on_gpu,
                                [node_name, done, context](StatusOr<Tensor> status) {
