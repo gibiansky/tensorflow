@@ -123,6 +123,7 @@ import tensorflow as tf
 
 from tensorflow.contrib.mpi.mpi_ops import size
 from tensorflow.contrib.mpi.mpi_ops import rank
+from tensorflow.contrib.mpi.mpi_ops import local_rank
 from tensorflow.contrib.mpi.mpi_ops import allgather
 from tensorflow.contrib.mpi.mpi_ops import _allreduce
 

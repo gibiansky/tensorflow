@@ -132,8 +132,9 @@ struct MPIGlobalState {
     // Whether MPI_Init succeeded on the background thread.
     Status init_status;
 
-    // The MPI rank and size.
+    // The MPI rank, local rank, and size.
     int rank = 0;
+    int local_rank = 0;
     int size = 1;
 
     ~MPIGlobalState() {
@@ -478,7 +479,15 @@ void BackgroundThreadLoop(MPIGlobalState& state) {
     int size;
     MPI_Comm_size(MPI_COMM_WORLD, &size);
 
+    // Determine local rank by querying the local communicator.
+    MPI_Comm local_comm;
+    MPI_Comm_split_type(MPI_COMM_WORLD, MPI_COMM_TYPE_SHARED, 0,
+                        MPI_INFO_NULL, &local_comm);
+    int local_rank;
+    MPI_Comm_rank(local_comm, &local_rank);
+
     state.rank = rank;
+    state.local_rank = local_rank;
     state.size = size;
     state.initialization_done = true;
 
@@ -815,7 +824,46 @@ communicator.
 rank:   Rank of the calling process.
 )doc");
 
-// Op to get the current MPI Rank.
+
+// Op to get the current local MPI Rank.
+class MPILocalRankOp : public OpKernel {
+ public:
+  explicit MPILocalRankOp(OpKernelConstruction* context) : OpKernel(context) {
+    OP_REQUIRES_OK(context, InitializeMPIOnce());
+  }
+
+  void Compute(OpKernelContext* context) override {
+    int local_rank = mpi_global.local_rank;
+
+    // Write integer to output tensor
+    Tensor* output;
+    OP_REQUIRES_OK(context, context->allocate_output(0, TensorShape({}), &output));
+
+    auto flat = output->flat<int>();
+    flat(0) = local_rank;
+  }
+};
+
+REGISTER_KERNEL_BUILDER(Name("MPILocalRank").Device(DEVICE_CPU), MPILocalRankOp);
+#ifdef GOOGLE_CUDA
+REGISTER_KERNEL_BUILDER(Name("MPILocalRank").Device(DEVICE_GPU), MPILocalRankOp);
+#endif
+
+REGISTER_OP("MPILocalRank")
+    .Output("rank: int32")
+    .SetShapeFn([](shape_inference::InferenceContext* c) {
+      c->set_output(0, c->Scalar());
+      return Status::OK();
+    })
+    .Doc(R"doc(
+Returns the index of the current process in the node it is on.
+
+More precisely, returns the rank of the calling process in communicator that
+only spans the MPI processes running on that node.
+
+rank:   Rank of the calling process on the node it is on.
+)doc");
+
 template <typename Device>
 class MPIAllreduceOp : public AsyncOpKernel {
  public:

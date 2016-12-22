@@ -58,6 +58,23 @@ def rank(name=None):
 ops.NotDifferentiable('MPIRank')
 
 
+def local_rank(name=None):
+  """An op which returns the local MPI rank of the calling process, within the
+  node that it is running on. For example, if there are seven processes running
+  on a node, their local ranks will be zero through six, inclusive.
+
+  This is equivalent to running `MPI_Comm_rank(...)` on a new communicator
+  which only includes processes on the same node.
+
+  Returns:
+    An integer scalar with the local MPI rank of the calling process.
+  """
+  return gen_mpi_op_wrapper_py.mpi_local_rank(name=name)
+
+
+ops.NotDifferentiable('MPILocalRank')
+
+
 def _allreduce(tensor, name=None):
   """An op which sums an input tensor over all the MPI processes.
 
@@ -122,5 +139,5 @@ def _load_library(name, op_list=None):
 
 
 if os.name != 'nt':
-    _load_library('mpi.so', ['MPISize', 'MPIRank',
+    _load_library('mpi.so', ['MPISize', 'MPIRank', 'MPILocalRank',
                              'MPIAllgather', 'MPIAllreduce'])

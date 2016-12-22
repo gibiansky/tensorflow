@@ -81,8 +81,8 @@ class MPITests(tf.test.TestCase):
             size = session.run(mpi.size())
             self.assertEqual(true_size, size)
 
-    def test_mpi_allreduce(self):
-        """Test that the allreduce correctly sums 1D, 2D, 3D tensors."""
+    def test_mpi_allreduce_cpu(self):
+        """Test on CPU that the allreduce correctly sums 1D, 2D, 3D tensors."""
         with self.test_session() as session:
             size = session.run(mpi.size())
 
@@ -110,6 +110,50 @@ class MPITests(tf.test.TestCase):
                 diff = session.run(max_difference)
                 self.assertTrue(diff <= threshold,
                                 "mpi.allreduce produces incorrect results")
+
+    def test_mpi_allreduce_gpu(self):
+        """Test that the allreduce works on GPUs.
+
+        This test will crash badly if used with an MPI implementation that does
+        not support GPU memory transfers directly, as it will call MPI_Send on
+        a GPU data pointer."""
+        # Only do this test if there are GPUs available.
+        if not tf.test.is_gpu_available(cuda_only=True):
+            return
+
+        no_gpus = tf.GPUOptions(visible_device_list="")
+        cpu_config = tf.ConfigProto(gpu_options=no_gpus)
+        with self.test_session(config=cpu_config) as session:
+            local_rank = session.run(mpi.local_rank())
+
+        one_gpu = tf.GPUOptions(visible_device_list=str(local_rank))
+        gpu_config = tf.ConfigProto(gpu_options=one_gpu)
+        with self.test_session(config=gpu_config) as session:
+            size = session.run(mpi.size())
+
+            dtype = tf.float32
+            dim = 3
+            with tf.device("/gpu:0"):
+                tf.set_random_seed(1234)
+                tensor = tf.random_uniform([17] * dim, -100, 100, dtype=dtype)
+                summed = mpi.allreduce(tensor, average=False)
+                multiplied = tensor * size
+                max_difference = tf.reduce_max(tf.abs(summed - multiplied))
+
+            # Threshold for floating point equality depends on number of
+            # ranks, since we're comparing against precise multiplication.
+            if size <= 3:
+                threshold = 0
+            elif size < 10:
+                threshold = 1e-4
+            elif size < 15:
+                threshold = 5e-4
+            else:
+                return
+
+            diff = session.run(max_difference)
+            self.assertTrue(diff <= threshold,
+                            "mpi.allreduce on GPU produces incorrect results")
 
     def test_mpi_allreduce_error(self):
         """Test that the allreduce raises an error if different ranks try to
@@ -163,10 +207,9 @@ class MPITests(tf.test.TestCase):
             size = session.run(mpi.size())
             rank = session.run(mpi.rank())
 
-            devices = "/gpu:0", "/cpu:0"
             dtypes = tf.int32, tf.float32
             dims = 1, 2, 3
-            for device, dtype, dim in itertools.product(devices, dtypes, dims):
+            for dtype, dim in itertools.product(dtypes, dims):
                 tensor = tf.ones([17] * dim, dtype=dtype) * rank
                 gathered = mpi.allgather(tensor)
 
@@ -190,10 +233,9 @@ class MPITests(tf.test.TestCase):
             size = session.run(mpi.size())
             rank = session.run(mpi.rank())
 
-            devices = "/gpu:0", "/cpu:0"
             dtypes = tf.int32, tf.float32
             dims = 1, 2, 3
-            for device, dtype, dim in itertools.product(devices, dtypes, dims):
+            for dtype, dim in itertools.product(dtypes, dims):
                 # Support tests up to MPI Size of 35
                 if size > 35:
                     break
