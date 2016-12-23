@@ -18,98 +18,11 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-import os
-
-from tensorflow.contrib.mpi.ops import gen_mpi_op_wrapper_py
 from tensorflow.python.framework import errors
 from tensorflow.python.framework import load_library
 from tensorflow.python.framework import ops
 from tensorflow.python.platform import resource_loader
 from tensorflow.python.platform import tf_logging as logging
-
-
-def size(name=None):
-  """An op which returns the number of MPI processes.
-
-  This is equivalent to running `MPI_Comm_size(MPI_COMM_WORLD, ...)` to get the
-  size of the global communicator.
-
-  Returns:
-    An integer scalar containing the number of MPI processes.
-  """
-  return gen_mpi_op_wrapper_py.mpi_size(name=name)
-
-
-ops.NotDifferentiable('MPISize')
-
-
-def rank(name=None):
-  """An op which returns the MPI rank of the calling process.
-
-  This is equivalent to running `MPI_Comm_rank(MPI_COMM_WORLD, ...)` to get the
-  rank of the current process in the global communicator.
-
-  Returns:
-    An integer scalar with the MPI rank of the calling process.
-  """
-  return gen_mpi_op_wrapper_py.mpi_rank(name=name)
-
-
-ops.NotDifferentiable('MPIRank')
-
-
-def local_rank(name=None):
-  """An op which returns the local MPI rank of the calling process, within the
-  node that it is running on. For example, if there are seven processes running
-  on a node, their local ranks will be zero through six, inclusive.
-
-  This is equivalent to running `MPI_Comm_rank(...)` on a new communicator
-  which only includes processes on the same node.
-
-  Returns:
-    An integer scalar with the local MPI rank of the calling process.
-  """
-  return gen_mpi_op_wrapper_py.mpi_local_rank(name=name)
-
-
-ops.NotDifferentiable('MPILocalRank')
-
-
-def _allreduce(tensor, name=None):
-  """An op which sums an input tensor over all the MPI processes.
-
-  The reduction operation is keyed by the name of the op. The tensor type and
-  shape must be the same on all MPI processes for a given name. The reduction
-  will not start until all processes are ready to send and receive the tensor.
-
-  Returns:
-    A tensor of the same shape and type as `tensor`, summed across all
-    processes.
-  """
-  return gen_mpi_op_wrapper_py.mpi_allreduce(tensor, name=name)
-
-
-ops.NotDifferentiable('MPIAllreduce')
-
-
-def allgather(tensor, name=None):
-  """An op which concatenates the input tensor with the same input tensor on
-  all other MPI processes.
-
-  The concatenation is done on the first dimension, so the input tensors on the
-  different processes must have the same rank and shape, except for the first
-  dimension, which is allowed to be different.
-
-  Returns:
-    A tensor of the same type as `tensor`, concatenated on dimension zero
-    across all processes. The shape is identical to the input shape, except for
-    the first dimension, which may be greater and is the sum of all first
-    dimensions of the tensors in different MPI processes.
-  """
-  return gen_mpi_op_wrapper_py.mpi_allgather(tensor, name=name)
-
-
-ops.NotDifferentiable('MPIAllgather')
 
 
 def _load_library(name, op_list=None):
@@ -134,10 +47,96 @@ def _load_library(name, op_list=None):
               raise NameError(
                   'Could not find operator %s in dynamic library %s' %
                   (expected_op, name))
+      return library
   except errors.NotFoundError:
       logging.warning('%s file could not be loaded.', name)
 
 
-if os.name != 'nt':
-    _load_library('mpi.so', ['MPISize', 'MPIRank', 'MPILocalRank',
-                             'MPIAllgather', 'MPIAllreduce'])
+MPI_LIB = _load_library('mpi.so', ['MPISize', 'MPIRank', 'MPILocalRank',
+                                   'MPIAllgather', 'MPIAllreduce'])
+
+
+def size(name=None):
+  """An op which returns the number of MPI processes.
+
+  This is equivalent to running `MPI_Comm_size(MPI_COMM_WORLD, ...)` to get the
+  size of the global communicator.
+
+  Returns:
+    An integer scalar containing the number of MPI processes.
+  """
+  return MPI_LIB.mpi_size(name=name)
+
+
+ops.NotDifferentiable('MPISize')
+
+
+def rank(name=None):
+  """An op which returns the MPI rank of the calling process.
+
+  This is equivalent to running `MPI_Comm_rank(MPI_COMM_WORLD, ...)` to get the
+  rank of the current process in the global communicator.
+
+  Returns:
+    An integer scalar with the MPI rank of the calling process.
+  """
+  return MPI_LIB.mpi_rank(name=name)
+
+
+ops.NotDifferentiable('MPIRank')
+
+
+def local_rank(name=None):
+  """An op which returns the local MPI rank of the calling process, within the
+  node that it is running on. For example, if there are seven processes running
+  on a node, their local ranks will be zero through six, inclusive.
+
+  This is equivalent to running `MPI_Comm_rank(...)` on a new communicator
+  which only includes processes on the same node.
+
+  Returns:
+    An integer scalar with the local MPI rank of the calling process.
+  """
+  return MPI_LIB.mpi_local_rank(name=name)
+
+
+ops.NotDifferentiable('MPILocalRank')
+
+
+def _allreduce(tensor, name=None):
+  """An op which sums an input tensor over all the MPI processes.
+
+  The reduction operation is keyed by the name of the op. The tensor type and
+  shape must be the same on all MPI processes for a given name. The reduction
+  will not start until all processes are ready to send and receive the tensor.
+
+  Returns:
+    A tensor of the same shape and type as `tensor`, summed across all
+    processes.
+  """
+  return MPI_LIB.mpi_allreduce(tensor, name=name)
+
+
+ops.NotDifferentiable('MPIAllreduce')
+
+
+def allgather(tensor, name=None):
+  """An op which concatenates the input tensor with the same input tensor on
+  all other MPI processes.
+
+  The concatenation is done on the first dimension, so the input tensors on the
+  different processes must have the same rank and shape, except for the first
+  dimension, which is allowed to be different.
+
+  Returns:
+    A tensor of the same type as `tensor`, concatenated on dimension zero
+    across all processes. The shape is identical to the input shape, except for
+    the first dimension, which may be greater and is the sum of all first
+    dimensions of the tensors in different MPI processes.
+  """
+  return MPI_LIB.mpi_allgather(tensor, name=name)
+
+
+ops.NotDifferentiable('MPIAllgather')
+
+

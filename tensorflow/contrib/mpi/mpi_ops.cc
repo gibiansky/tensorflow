@@ -21,11 +21,14 @@
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/shape_inference.h"
 
-#ifdef GOOGLE_CUDA
+#define EIGEN_USE_THREADS
+
+#if GOOGLE_CUDA
 #include "tensorflow/stream_executor/stream.h"
 #endif
 
 #include "tensorflow/stream_executor/lib/statusor.h"
+
 
 #define OMPI_SKIP_MPICXX
 #include "third_party/mpi/mpi.h"
@@ -70,6 +73,21 @@ using GPUDevice = Eigen::GpuDevice;
 namespace tensorflow {
 namespace contrib {
 namespace mpi {
+
+// Make sure template specializations are generated in the ring.cu.cc and the
+// ring.cc file, not in this file.
+extern template Status RingAllreduce<GPUDevice, int>(OpKernelContext*, Tensor&, Tensor*);
+extern template Status RingAllreduce<GPUDevice, float>(OpKernelContext*, Tensor&, Tensor*);
+extern template Status RingAllgather<GPUDevice, int>(
+    OpKernelContext*, Tensor&, Tensor*, std::vector<size_t>&);
+extern template Status RingAllgather<GPUDevice, float>(
+    OpKernelContext*, Tensor&, Tensor*, std::vector<size_t>&);
+extern template Status RingAllreduce<CPUDevice, int>(OpKernelContext*, Tensor&, Tensor*);
+extern template Status RingAllreduce<CPUDevice, float>(OpKernelContext*, Tensor&, Tensor*);
+extern template Status RingAllgather<CPUDevice, int>(
+    OpKernelContext*, Tensor&, Tensor*, std::vector<size_t>&);
+extern template Status RingAllgather<CPUDevice, float>(
+    OpKernelContext*, Tensor&, Tensor*, std::vector<size_t>&);
 
 namespace {
 
@@ -368,7 +386,7 @@ void PerformReductionOrGather(TensorTable& tensor_table, MPIResponse response) {
 
     // Use CPUDevice instead of GPUDevice if no CUDA, to ensure we don't
     // link to non-existent symbols.
-#ifdef GOOGLE_CUDA
+#if GOOGLE_CUDA
 #define GPU_DEVICE_IF_CUDA  GPUDevice
 #else
 #define GPU_DEVICE_IF_CUDA  CPUDevice
@@ -765,7 +783,7 @@ class MPISizeOp : public OpKernel {
 };
 
 REGISTER_KERNEL_BUILDER(Name("MPISize").Device(DEVICE_CPU), MPISizeOp);
-#ifdef GOOGLE_CUDA
+#if GOOGLE_CUDA
 REGISTER_KERNEL_BUILDER(Name("MPISize").Device(DEVICE_GPU), MPISizeOp);
 #endif
 
@@ -805,7 +823,7 @@ class MPIRankOp : public OpKernel {
 };
 
 REGISTER_KERNEL_BUILDER(Name("MPIRank").Device(DEVICE_CPU), MPIRankOp);
-#ifdef GOOGLE_CUDA
+#if GOOGLE_CUDA
 REGISTER_KERNEL_BUILDER(Name("MPIRank").Device(DEVICE_GPU), MPIRankOp);
 #endif
 
@@ -845,7 +863,7 @@ class MPILocalRankOp : public OpKernel {
 };
 
 REGISTER_KERNEL_BUILDER(Name("MPILocalRank").Device(DEVICE_CPU), MPILocalRankOp);
-#ifdef GOOGLE_CUDA
+#if GOOGLE_CUDA
 REGISTER_KERNEL_BUILDER(Name("MPILocalRank").Device(DEVICE_GPU), MPILocalRankOp);
 #endif
 
@@ -892,7 +910,7 @@ class MPIAllreduceOp : public AsyncOpKernel {
       // get a stream to enqueue this on. On a CPU this op is called when the
       // data is already available, so we can just immediately do the allreduce;
       // we don't have to wait for the data to get populated.
-#ifdef GOOGLE_CUDA
+#if GOOGLE_CUDA
       if(device_context == nullptr) {
           callback();
       } else {
@@ -906,7 +924,7 @@ class MPIAllreduceOp : public AsyncOpKernel {
 };
 
 REGISTER_KERNEL_BUILDER(Name("MPIAllreduce").Device(DEVICE_CPU), MPIAllreduceOp<CPUDevice>);
-#ifdef GOOGLE_CUDA
+#if GOOGLE_CUDA
 REGISTER_KERNEL_BUILDER(Name("MPIAllreduce").Device(DEVICE_GPU), MPIAllreduceOp<GPUDevice>);
 #endif
 
@@ -959,7 +977,7 @@ class MPIAllgatherOp : public AsyncOpKernel {
       // get a stream to enqueue this on. On a CPU this op is called when the
       // data is already available, so we can just immediately do the allgather;
       // we don't have to wait for the data to get populated.
-#ifdef GOOGLE_CUDA
+#if GOOGLE_CUDA
       if(device_context == nullptr) {
           callback();
       } else {
@@ -973,7 +991,7 @@ class MPIAllgatherOp : public AsyncOpKernel {
 };
 
 REGISTER_KERNEL_BUILDER(Name("MPIAllgather").Device(DEVICE_CPU), MPIAllgatherOp<CPUDevice>);
-#ifdef GOOGLE_CUDA
+#if GOOGLE_CUDA
 REGISTER_KERNEL_BUILDER(Name("MPIAllgather").Device(DEVICE_GPU), MPIAllgatherOp<GPUDevice>);
 #endif
 
